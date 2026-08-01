@@ -4,7 +4,7 @@ import React, { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useDashboard } from "@/lib/DashboardContext";
 import * as THREE from "three";
-import { Box, Cylinder, Sphere } from "@react-three/drei";
+import { Box, Cylinder } from "@react-three/drei";
 
 export default function DroneModel() {
   const {
@@ -22,31 +22,45 @@ export default function DroneModel() {
   useFrame((state, delta) => {
     if (groupRef.current) {
       if (isRotating) {
-        groupRef.current.rotation.y += delta * 0.2;
+        groupRef.current.rotation.y += delta * 0.15; // Slow idle rotation
       }
 
       if (isHovering) {
         hoverTime.current += delta;
-        groupRef.current.position.y = Math.sin(hoverTime.current * 2) * 0.2;
+        groupRef.current.position.y = Math.sin(hoverTime.current * 1.5) * 0.15; // Subtle hover
       } else {
         groupRef.current.position.y = THREE.MathUtils.lerp(groupRef.current.position.y, 0, 0.1);
       }
     }
   });
 
-  // Materials
-  const baseMaterial = useMemo(() => new THREE.MeshStandardMaterial({
-    color: "#2a2a2a",
-    roughness: 0.2,
+  // Base materials for the cosmetic drone shell
+  const carbonFiberMaterial = useMemo(() => new THREE.MeshStandardMaterial({
+    color: "#111111",
+    roughness: 0.6,
     metalness: 0.8,
   }), []);
 
-  const getModuleMaterial = (moduleName: string) => {
+  const accentLightMaterial = useMemo(() => new THREE.MeshStandardMaterial({
+    color: "#22c55e",
+    emissive: "#22c55e",
+    emissiveIntensity: 0.5,
+  }), []);
+
+  // Material logic for the internal CPU only
+  const getCPUMaterial = () => {
     let glowColor = new THREE.Color(0, 0, 0);
     let isGlowing = false;
     let emissiveIntensity = 0;
 
-    if (highlightedModules.includes(moduleName) || highlightedModules.includes("All")) {
+    // Base highlight logic for ANY processor subsystem
+    const processorSubsystems = [
+      "CPU", "Register File", "ECC Decoder", "ALU Cluster", 
+      "Majority Voter", "Instruction Memory", "Data Memory"
+    ];
+    const hasHighlight = highlightedModules.some(m => processorSubsystems.includes(m));
+
+    if (hasHighlight) {
       glowColor.setHex(0x3b82f6); // Blue outline highlight
       isGlowing = true;
       emissiveIntensity = 0.5;
@@ -54,19 +68,19 @@ export default function DroneModel() {
 
     // Override with fault colors
     if (activeFaultModule) {
-      if (moduleName === "CPU" && activeFaultModule === "CPU_SEC") {
+      if (activeFaultModule === "CPU_SEC") {
         glowColor.setHex(0xf59e0b); // Amber for SEC
         isGlowing = true;
         emissiveIntensity = 2;
-      } else if (moduleName === "CPU" && activeFaultModule === "CPU_DED") {
+      } else if (activeFaultModule === "CPU_DED") {
         glowColor.setHex(0xef4444); // Red for DED
         isGlowing = true;
         emissiveIntensity = 2;
-      } else if (moduleName === "CPU" && activeFaultModule.startsWith("ALU_")) {
+      } else if (activeFaultModule.startsWith("ALU_")) {
         glowColor.setHex(0xef4444); // Red for ALU fail
         isGlowing = true;
         emissiveIntensity = 2;
-      } else if (moduleName === "CPU" && activeFaultModule === "TMR_RECOVER") {
+      } else if (activeFaultModule === "TMR_RECOVER") {
         glowColor.setHex(0x22c55e); // Green for Recover
         isGlowing = true;
         emissiveIntensity = 2;
@@ -83,33 +97,36 @@ export default function DroneModel() {
       });
     }
 
-    return baseMaterial;
+    // Default internal board color
+    return new THREE.MeshStandardMaterial({
+      color: "#1a1a1a",
+      roughness: 0.8,
+      metalness: 0.2,
+    });
   };
 
   const explodeOffset = isExploded ? 1.5 : 0;
 
-  // Drone Parts
-  const armLength = 2.5;
-  const armThickness = 0.15;
+  // Drone Proportions
+  const armLength = 2.8;
+  const armThickness = 0.12;
   
   return (
     <group ref={groupRef}>
-      {/* Center Body - CPU & FC */}
-      <Box args={[1.5, 0.4, 1.5]} position={[0, isExploded ? 0.5 : 0, 0]} castShadow material={getModuleMaterial("CPU")}>
-        <meshStandardMaterial attach="material" {...getModuleMaterial("CPU")} />
-      </Box>
-
-      {/* Top Cover - Battery */}
-      <Box args={[1, 0.2, 1]} position={[0, (isExploded ? 1.5 : 0) + 0.3, 0]} castShadow material={getModuleMaterial("Battery")}>
-        <meshStandardMaterial attach="material" {...getModuleMaterial("Battery")} />
-      </Box>
       
-      {/* Bottom Cover - Camera/Sensors */}
-      <Cylinder args={[0.3, 0.4, 0.5, 16]} position={[0, (isExploded ? -1.5 : 0) - 0.4, 0]} castShadow material={getModuleMaterial("Camera")}>
-        <meshStandardMaterial attach="material" {...getModuleMaterial("Camera")} />
-      </Cylinder>
+      {/* INTERNAL CPU REGION - The only part that reacts to faults */}
+      <Box args={[1.2, 0.2, 1.2]} position={[0, 0, 0]}>
+        <meshStandardMaterial attach="material" {...getCPUMaterial()} />
+      </Box>
 
-      {/* Arms & Motors */}
+      {/* TOP COSMETIC SHELL */}
+      <Box args={[1.6, 0.15, 1.6]} position={[0, (isExploded ? 1.5 : 0) + 0.25, 0]} castShadow material={carbonFiberMaterial} />
+      
+      {/* BOTTOM COSMETIC SHELL & CAMERA */}
+      <Box args={[1.6, 0.15, 1.6]} position={[0, (isExploded ? -1.5 : 0) - 0.25, 0]} castShadow material={carbonFiberMaterial} />
+      <Cylinder args={[0.2, 0.25, 0.4, 16]} position={[0, (isExploded ? -1.5 : 0) - 0.4, 0]} castShadow material={carbonFiberMaterial} />
+
+      {/* ARMS & MOTORS (Cosmetic Only) */}
       {[
         [1, 1], [1, -1], [-1, 1], [-1, -1]
       ].map(([x, z], i) => (
@@ -120,22 +137,26 @@ export default function DroneModel() {
             position={[x * armLength / 2.5, 0, z * armLength / 2.5]}
             rotation={[0, x * z > 0 ? -Math.PI / 4 : Math.PI / 4, 0]}
             castShadow
-            material={baseMaterial}
+            material={carbonFiberMaterial}
           />
-          {/* Motor / ESC */}
+          {/* Motor Body */}
           <Cylinder
-            args={[0.3, 0.3, 0.4, 16]}
+            args={[0.25, 0.25, 0.3, 16]}
             position={[x * armLength * 0.7, 0.1, z * armLength * 0.7]}
             castShadow
-            material={getModuleMaterial("ESC")}
-          >
-            <meshStandardMaterial attach="material" {...getModuleMaterial("ESC")} />
-          </Cylinder>
-          {/* Propeller Guide/Guard (Abstracted) */}
+            material={carbonFiberMaterial}
+          />
+          {/* Subtle Rotor Ring Accent Light */}
           <Cylinder
-            args={[1, 1, 0.05, 32]}
+            args={[0.26, 0.26, 0.05, 16]}
+            position={[x * armLength * 0.7, 0.2, z * armLength * 0.7]}
+            material={accentLightMaterial}
+          />
+          {/* Rotor Blades (Abstract transparent disc) */}
+          <Cylinder
+            args={[0.9, 0.9, 0.02, 32]}
             position={[x * armLength * 0.7, 0.3, z * armLength * 0.7]}
-            material={new THREE.MeshStandardMaterial({ color: "#555", transparent: true, opacity: 0.3, side: THREE.DoubleSide })}
+            material={new THREE.MeshStandardMaterial({ color: "#222", transparent: true, opacity: 0.2, side: THREE.DoubleSide })}
           />
         </group>
       ))}
