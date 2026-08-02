@@ -5,7 +5,6 @@ import { useFrame } from "@react-three/fiber";
 import { useGLTF, Html } from "@react-three/drei";
 import { useDashboard } from "@/lib/DashboardContext";
 import * as THREE from "three";
-import anime from "animejs";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    CONSTANTS — colour scheme matched to reference video
@@ -40,19 +39,6 @@ const EXPLODE_OFF: Record<string, [number, number, number]> = {
   SHELL_BOTTOM: [0, -2.2, 0],
   CAMERA:       [0, -2.2, 0],
 };
-
-/**
- * Tier mapping for the 4-layer teardown look.
- * Delay calculation: (tier - 1) * TIER_DELAY
- */
-const TIER_MAP: Record<string, number> = {
-  ARM_PP: 1, ARM_PN: 1, ARM_NP: 1, ARM_NN: 1,
-  SHELL_TOP: 2,
-  CPU_BOARD: 3, ROOT: 3,
-  SHELL_BOTTOM: 4, CAMERA: 4,
-};
-const TIER_DELAY = 180; // ms between tiers
-const MAX_TIER = 4;
 
 /** Display info per part category. Only one part per tier gets a label to avoid clutter. */
 interface LabelInfo { text: string; hero: boolean }
@@ -144,7 +130,6 @@ interface Part {
   object:        THREE.Object3D;
   origPos:       THREE.Vector3;
   parentScale:   THREE.Vector3;
-  currentOffset: { x: number, y: number, z: number };
 }
 
 const PROC_SUBS = [
@@ -157,9 +142,9 @@ const PROC_SUBS = [
    COMPONENT
 ═══════════════════════════════════════════════════════════════════════════ */
 
-export default function DroneModel() {
+export default function DroneModel({ staticExploded = false }: { staticExploded?: boolean }) {
   const {
-    isExploded, isHovering, isRotating,
+    isHovering, isRotating,
     highlightedModules, activeFaultModule,
   } = useDashboard();
 
@@ -231,7 +216,6 @@ export default function DroneModel() {
         object:   cloned,
         origPos:  new THREE.Vector3(),
         parentScale: new THREE.Vector3(1, 1, 1),
-        currentOffset: { x: 0, y: 0, z: 0 },
       }];
     }
 
@@ -255,7 +239,6 @@ export default function DroneModel() {
         object:        obj,
         origPos:       obj.position.clone(),
         parentScale:   cumulativeScale,
-        currentOffset: { x: 0, y: 0, z: 0 },
       };
     });
   }, [cloned]);
@@ -295,27 +278,6 @@ export default function DroneModel() {
   /* ── 6. Animation refs ──────────────────────────────────────────────────── */
   const groupRef  = useRef<THREE.Group>(null);
   const hoverTime = useRef(0);
-  const prevExp   = useRef(isExploded);
-
-  useEffect(() => {
-    parts.forEach((part) => {
-      const tier  = TIER_MAP[part.category] ?? 3;
-      const delay = isExploded ? (tier - 1) * TIER_DELAY : (MAX_TIER - tier) * TIER_DELAY;
-      const target = isExploded
-        ? (localExplodeOff[part.category] ?? new THREE.Vector3())
-        : new THREE.Vector3();
-
-      anime({
-        targets: part.currentOffset,
-        x: target.x,
-        y: target.y,
-        z: target.z,
-        duration: isExploded ? 1400 : 800,
-        delay: delay,
-        easing: isExploded ? "easeOutElastic(1, .6)" : "easeOutExpo",
-      });
-    });
-  }, [isExploded, parts, localExplodeOff]);
 
   useFrame((state, delta) => {
     if (groupRef.current) {
@@ -329,8 +291,8 @@ export default function DroneModel() {
     }
 
     parts.forEach((part) => {
-      const offsetVec = new THREE.Vector3(part.currentOffset.x, part.currentOffset.y, part.currentOffset.z);
-      const adjustedOffset = offsetVec.divide(part.parentScale);
+      const targetOff = staticExploded ? (localExplodeOff[part.category] ?? new THREE.Vector3()) : new THREE.Vector3();
+      const adjustedOffset = targetOff.clone().divide(part.parentScale);
       part.object.position.copy(part.origPos).add(adjustedOffset);
       part.object.updateMatrixWorld(true);
     });
@@ -341,16 +303,17 @@ export default function DroneModel() {
       if (!part) return;
 
       const mat        = line.material as THREE.LineBasicMaterial;
-      const offsetVec  = new THREE.Vector3(part.currentOffset.x, part.currentOffset.y, part.currentOffset.z);
-      const displaced  = offsetVec.length();
-      const targetOp   = isExploded && displaced > 0.04 ? 0.28 : 0;
-      mat.opacity      = THREE.MathUtils.lerp(mat.opacity, targetOp, delta * 3);
+      const targetOff  = staticExploded ? (localExplodeOff[part.category] ?? new THREE.Vector3()) : new THREE.Vector3();
+      const displaced  = targetOff.length();
+      
+      // Static view means lines are either fully visible or hidden immediately
+      mat.opacity      = staticExploded && displaced > 0.04 ? 0.28 : 0;
       line.visible     = mat.opacity > 0.005;
 
       if (line.visible) {
         const attr = (line.geometry as THREE.BufferGeometry).attributes.position as THREE.BufferAttribute;
         attr.setXYZ(0, part.origPos.x, part.origPos.y, part.origPos.z);
-        const end = part.origPos.clone().add(part.currentOffset);
+        const end = part.origPos.clone().add(targetOff);
         attr.setXYZ(1, end.x, end.y, end.z);
         attr.needsUpdate = true;
       }
@@ -380,7 +343,7 @@ export default function DroneModel() {
         <primitive object={guideGroup}  />
       </group>
 
-      {isExploded &&
+      {staticExploded &&
         parts.map((part, i) => {
           const info = LABELS[part.category];
           if (!info) return null;
@@ -405,7 +368,8 @@ export default function DroneModel() {
                   textShadow:    info.hero
                     ? "0 0 10px rgba(249,115,22,0.95), 0 0 22px rgba(249,115,22,0.55)"
                     : "none",
-                  animation:     `fadeInLabel 0.4s ease forwards ${isExploded ? ((TIER_MAP[part.category] ?? 3) - 1) * (TIER_DELAY / 1000) + 0.3 : 0}s`,
+                  // Very gentle fade-in on mount
+                  animation:     `fadeInLabel 0.8s ease forwards 0.2s`,
                   opacity:       0,
                 }}
               >

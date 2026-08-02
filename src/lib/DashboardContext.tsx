@@ -25,8 +25,6 @@ interface DashboardState {
   currentMode: "Simplex" | "Triple Modular Redundancy";
   
   // 3D Visual State
-  isExploded: boolean;
-  setIsExploded: (v: boolean) => void;
   isHovering: boolean;
   setIsHovering: (v: boolean) => void;
   isRotating: boolean;
@@ -61,7 +59,6 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [currentMode, setCurrentMode] = useState<"Simplex" | "Triple Modular Redundancy">("Simplex");
   
   // 3D Visual State
-  const [isExploded, setIsExploded] = useState(false);
   const [isHovering, setIsHovering] = useState(true);
   const [isRotating, setIsRotating] = useState(true);
   const [highlightedModules, setHighlightedModules] = useState<string[]>([]);
@@ -103,7 +100,6 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     setCurrentMode("Simplex");
     setActiveFaultModule(null);
     setHighlightedModules([]);
-    setIsExploded(false);
     setLiveMonitor({ type: "IDLE", value: "0x00000000" });
     setHasPersistentFault(false);
     triggerCameraReset();
@@ -199,7 +195,6 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         processorState,
         clock: "100 MHz",
         currentMode,
-        isExploded, setIsExploded,
         isHovering, setIsHovering,
         isRotating, setIsRotating,
         highlightedModules, setHighlightedModules, toggleHighlightedModule,
