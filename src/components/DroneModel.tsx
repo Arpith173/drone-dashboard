@@ -5,6 +5,7 @@ import { useFrame } from "@react-three/fiber";
 import { useGLTF, Html } from "@react-three/drei";
 import { useDashboard } from "@/lib/DashboardContext";
 import * as THREE from "three";
+import anime from "animejs";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    CONSTANTS — colour scheme matched to reference video
@@ -299,6 +300,27 @@ export default function DroneModel() {
   const tStart    = useRef<number | null>(null);
   const prevExp   = useRef(isExploded);
 
+  /* ── 6.5. Anime.js Explosion Physics ───────────────────────────────────── */
+  useEffect(() => {
+    parts.forEach((part) => {
+      const sd    = STAGGER[part.category] ?? 0;
+      const delay = isExploded ? sd * 1000 : (MAX_STAGGER - sd) * 1000;
+      const target = isExploded
+        ? (localExplodeOff[part.category] ?? new THREE.Vector3())
+        : new THREE.Vector3();
+
+      anime({
+        targets: part.currentOffset,
+        x: target.x,
+        y: target.y,
+        z: target.z,
+        duration: isExploded ? 1400 : 800,
+        delay: delay,
+        easing: isExploded ? "easeOutElastic(1, .6)" : "easeOutExpo",
+      });
+    });
+  }, [isExploded, parts, localExplodeOff]);
+
   useFrame((state, delta) => {
     const t = state.clock.elapsedTime;
 
@@ -307,7 +329,6 @@ export default function DroneModel() {
       tStart.current = t;
       prevExp.current = isExploded;
     }
-    const since = tStart.current !== null ? t - tStart.current : 1e6;
 
     /* ── Idle rotation + hover bob ──────────────────────────────────────── */
     if (groupRef.current) {
@@ -322,18 +343,8 @@ export default function DroneModel() {
       }
     }
 
-    /* ── Per-part staggered explosion ───────────────────────────────────── */
+    /* ── Per-part staggered explosion (Now driven by Anime.js) ──────────── */
     parts.forEach((part) => {
-      const sd    = STAGGER[part.category] ?? 0;
-      // Assemble: reverse stagger (CPU first = delay 0, arms last = delay MAX)
-      const delay = isExploded ? sd : (MAX_STAGGER - sd);
-      if (since - delay > 0) {
-        const target = isExploded
-          ? (localExplodeOff[part.category] ?? new THREE.Vector3())
-          : new THREE.Vector3();
-        // Eased lerp — natural ease-in-out from linear interpolation
-        part.currentOffset.lerp(target, Math.min(1, delta * 2.8));
-      }
       // Apply displacement to the object (in its parent = clonedScene local space)
       part.object.position.copy(part.origPos).add(part.currentOffset);
     });
@@ -426,7 +437,8 @@ export default function DroneModel() {
                     ? "0 0 10px rgba(249,115,22,0.95), 0 0 22px rgba(249,115,22,0.55)"
                     : "none",
                   /* Fade in slightly after the stagger animation starts */
-                  animation:     "fadeInLabel 0.55s ease forwards",
+                  animation:     `fadeInLabel 0.4s ease forwards ${((STAGGER[part.category] ?? 0) * 1) + 0.3}s`,
+                  opacity:       0,
                 }}
               >
                 {info.text}

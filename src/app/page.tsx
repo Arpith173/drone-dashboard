@@ -8,6 +8,7 @@ import DroneModel from "@/components/DroneModel";
 import { Activity, Zap, Layers, Settings2, RefreshCcw, Power, Pause, Play, Crosshair, Cpu } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import * as THREE from "three";
+import anime from "animejs";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    CAMERA CONTROLLER
@@ -286,9 +287,21 @@ function LiveMonitor() {
 
 function LeftPanel() {
   const { processorState, clock, currentMode, injectFault } = useDashboard();
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    anime({
+      targets: panelRef.current?.children,
+      translateX: [-50, 0],
+      opacity: [0, 1],
+      delay: anime.stagger(100, { start: 500 }),
+      easing: "easeOutExpo",
+      duration: 1200,
+    });
+  }, []);
 
   return (
-    <div className="absolute left-6 top-6 bottom-24 w-[340px] z-10 flex flex-col overflow-y-auto pointer-events-none pb-12 no-scrollbar">
+    <div ref={panelRef} className="absolute left-6 top-6 bottom-24 w-[340px] z-10 flex flex-col overflow-y-auto pointer-events-none pb-12 no-scrollbar">
       <LiveMonitor />
 
       {/* System Status Panel */}
@@ -366,6 +379,19 @@ function RightPanel() {
     highlightedModules, toggleHighlightedModule,
   } = useDashboard();
 
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    anime({
+      targets: panelRef.current?.children,
+      translateX: [50, 0],
+      opacity: [0, 1],
+      delay: anime.stagger(100, { start: 500 }),
+      easing: "easeOutExpo",
+      duration: 1200,
+    });
+  }, []);
+
   const subsystems = [
     "CPU", "Register File", "ECC Decoder",
     "ALU Cluster", "Majority Voter",
@@ -373,7 +399,7 @@ function RightPanel() {
   ];
 
   return (
-    <div className="absolute right-6 top-6 bottom-24 w-72 z-10 flex flex-col gap-6 pointer-events-none">
+    <div ref={panelRef} className="absolute right-6 top-6 bottom-24 w-72 z-10 flex flex-col gap-6 pointer-events-none">
       {/* Subsystems Panel */}
       <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-xl p-5 pointer-events-auto">
         <h2 className="text-white/60 text-xs font-bold uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
@@ -444,8 +470,21 @@ function BottomToolbar() {
     injectFault,
   } = useDashboard();
 
+  const toolbarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    anime({
+      targets: toolbarRef.current,
+      translateY: [50, 0],
+      opacity: [0, 1],
+      delay: 800,
+      easing: "easeOutExpo",
+      duration: 1200,
+    });
+  }, []);
+
   return (
-    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+    <div ref={toolbarRef} className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
       <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-full p-2 flex items-center gap-2 pointer-events-auto">
         <button
           onClick={resetDemo}
