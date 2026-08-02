@@ -26,40 +26,41 @@ const JOINT_ACCENT_COLOR = new THREE.Color(ORANGE); // orange accent for mechani
  *  ~2-unit offsets feel proportionally correct.)
  */
 const EXPLODE_OFF: Record<string, [number, number, number]> = {
-  SHELL_TOP:    [0,  1.85, 0],
-  SHELL_BOTTOM: [0, -1.65, 0.35],
-  CAMERA:       [0, -2.45, 0.58],
-  ARM_PP:       [ 2.25, -0.4,  2.25],
-  ARM_PN:       [ 2.25, -0.4, -2.25],
-  ARM_NP:       [-2.25, -0.4,  2.25],
-  ARM_NN:       [-2.25, -0.4, -2.25],
-  CPU_BOARD:    [0,  0.6, 0],
+  // Tier 1 - move outward and slightly down together
+  ARM_PP:       [ 0, -0.75, 0],
+  ARM_PN:       [ 0, -0.75, 0],
+  ARM_NP:       [ 0, -0.75, 0],
+  ARM_NN:       [ 0, -0.75, 0],
+  // Tier 2 - vertically up
+  SHELL_TOP:    [0,  1.5, 0],
+  // Tier 3 - CPU (focal point, extra clearance)
+  CPU_BOARD:    [0,  0.75, 0],
   ROOT:         [0,  0,   0],
+  // Tier 4 - vertically down
+  SHELL_BOTTOM: [0, -2.2, 0],
+  CAMERA:       [0, -2.2, 0],
 };
 
 /**
- * Stagger delays (seconds) before each part starts animating.
- * Explode order: arms first → CPU last.
- * Assemble order: mirrored (CPU first → arms last).
+ * Tier mapping for the 4-layer teardown look.
+ * Delay calculation: (tier - 1) * TIER_DELAY
  */
-const STAGGER: Record<string, number> = {
-  ARM_PP: 0.00, ARM_PN: 0.05, ARM_NP: 0.09, ARM_NN: 0.14,
-  SHELL_TOP: 0.20, SHELL_BOTTOM: 0.25, CAMERA: 0.29,
-  CPU_BOARD: 0.35, ROOT: 0,
+const TIER_MAP: Record<string, number> = {
+  ARM_PP: 1, ARM_PN: 1, ARM_NP: 1, ARM_NN: 1,
+  SHELL_TOP: 2,
+  CPU_BOARD: 3, ROOT: 3,
+  SHELL_BOTTOM: 4, CAMERA: 4,
 };
-const MAX_STAGGER = 0.35;
+const TIER_DELAY = 180; // ms between tiers
+const MAX_TIER = 4;
 
-/** Display info per part category. */
+/** Display info per part category. Only one part per tier gets a label to avoid clutter. */
 interface LabelInfo { text: string; hero: boolean }
 const LABELS: Record<string, LabelInfo> = {
-  CPU_BOARD:    { text: "CPU  ·  Register File  ·  ALU Cluster", hero: true },
-  SHELL_TOP:    { text: "Shell Panel",     hero: false },
-  SHELL_BOTTOM: { text: "Frame Assembly",  hero: false },
-  CAMERA:       { text: "Camera Housing",  hero: false },
-  ARM_PP:       { text: "Rotor Arm",       hero: false },
-  ARM_PN:       { text: "Rotor Arm",       hero: false },
-  ARM_NP:       { text: "Rotor Arm",       hero: false },
-  ARM_NN:       { text: "Rotor Arm",       hero: false },
+  ARM_PP:       { text: "Rotor Assembly",       hero: false },
+  SHELL_TOP:    { text: "Shell — Upper",        hero: false },
+  CPU_BOARD:    { text: "Fault-Tolerant Processor", hero: true },
+  SHELL_BOTTOM: { text: "Shell — Base",         hero: false },
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -99,10 +100,10 @@ function categorize(
   const quad = () => (rx >= 0 ? (rz >= 0 ? "ARM_PP" : "ARM_PN") : (rz >= 0 ? "ARM_NP" : "ARM_NN"));
 
   if (/cpu|processor|board|computer|logic|mainboard/.test(nLower)) return "CPU_BOARD";
-  if (/camera|cam|gimbal|lens/.test(nLower))                        return "CAMERA";
-  if (/top|lid|upper|cover/.test(nLower))                           return "SHELL_TOP";
-  if (/bottom|base|lower|land|chassis/.test(nLower))                return "SHELL_BOTTOM";
-  if (/arm|rotor|prop|motor|blade/.test(nLower))                    return quad();
+  if (/camera|cam|gimbal|lens/.test(nLower)) return "CAMERA";
+  if (/top|lid|upper|cover/.test(nLower)) return "SHELL_TOP";
+  if (/bottom|base|lower|land|chassis/.test(nLower)) return "SHELL_BOTTOM";
+  if (/arm|rotor|prop|motor|blade/.test(nLower)) return quad();
 
   const yT  = size.y * 0.18;
   const xzT = Math.max(size.x, size.z) * 0.28;
@@ -141,10 +142,9 @@ function makeCPUMat(fault: string | null, highlighted: boolean): THREE.MeshStand
 interface Part {
   category:      string;
   object:        THREE.Object3D;
-  /** Position in clonedScene local space (= normWrapper local space). */
   origPos:       THREE.Vector3;
-  /** Current displacement in the same local space as origPos. */
-  currentOffset: THREE.Vector3;
+  parentScale:   THREE.Vector3;
+  currentOffset: { x: number, y: number, z: number };
 }
 
 const PROC_SUBS = [
@@ -185,8 +185,6 @@ export default function DroneModel() {
     const normScale = 4.0 / maxDim;
 
     // normOffset: applied to normWrapper so model's bounding centre sits at world origin
-    // In groupRef local space: pos = normScale * origPos + normOffset
-    // → centre maps to 0 when normOffset = -normScale * ct
     const normOffset = ct.clone().negate().multiplyScalar(normScale);
 
     // Apply matte graphite to all meshes — machined metal/plastic with subtle specular
@@ -222,21 +220,18 @@ export default function DroneModel() {
 
   /* ── 3. Extract separable parts ────────────────────────────────────────── */
   const parts: Part[] = useMemo(() => {
-    // Collect top-level children; drill deeper until we find multiple children
     let cands = cloned.children;
     while (cands.length === 1 && cands[0].children.length > 0) {
       cands = cands[0].children;
     }
-    // Filter valid objects for parts
-    cands = cands.filter((c) => c.type === "Mesh" || c.type === "Group" || c.type === "Object3D");
 
-    // Fallback: model is a single unified mesh — animate as one piece
     if (cands.length <= 1) {
       return [{
         category: "ROOT",
         object:   cloned,
         origPos:  new THREE.Vector3(),
-        currentOffset: new THREE.Vector3(),
+        parentScale: new THREE.Vector3(1, 1, 1),
+        currentOffset: { x: 0, y: 0, z: 0 },
       }];
     }
 
@@ -247,37 +242,40 @@ export default function DroneModel() {
     return cands.map((obj): Part => {
       const b       = new THREE.Box3().setFromObject(obj);
       const centroid = b.getCenter(new THREE.Vector3());
+      
+      let cumulativeScale = new THREE.Vector3(1, 1, 1);
+      let curr = obj.parent;
+      while (curr && curr !== cloned.parent) {
+         cumulativeScale.multiply(curr.scale);
+         curr = curr.parent;
+      }
+      
       return {
         category:      categorize(obj, centroid, center, size),
         object:        obj,
         origPos:       obj.position.clone(),
-        currentOffset: new THREE.Vector3(),
+        parentScale:   cumulativeScale,
+        currentOffset: { x: 0, y: 0, z: 0 },
       };
     });
   }, [cloned]);
 
-  /* ── 4. Guide-line geometry (Three.js objects, updated imperatively) ───── */
+  /* ── 4. Guide-line geometry ────────────────────────────────────────────── */
   const guideGroup = useMemo(() => {
     const g = new THREE.Group();
     parts.forEach((part, i) => {
-      // CPU_BOARD is the hero — no guide line, it stays visually prominent
-      if (part.category === "CPU_BOARD" || part.category === "ROOT") return;
+      if (!LABELS[part.category] || part.category === "CPU_BOARD" || part.category === "ROOT") return;
       const geom = new THREE.BufferGeometry();
-      geom.setAttribute(
-        "position",
-        new THREE.BufferAttribute(new Float32Array(6), 3),
-      );
-      // Faint guide lines — barely visible, matching the floor grid aesthetic
+      geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
       const mat  = new THREE.LineBasicMaterial({ color: "#1a1a1f", opacity: 0, transparent: true });
       const line = new THREE.Line(geom, mat);
       (line as unknown as { __pi: number }).__pi = i;
       g.add(line);
     });
     return g;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parts]);
 
-  /* ── 5. CPU fault glow (reactive, rebuilt only when fault state changes) ─ */
+  /* ── 5. CPU fault glow ──────────────────────────────────────────────────── */
   const hasHL  = highlightedModules.some((m) => PROC_SUBS.includes(m));
   const cpuMat = useMemo(
     () => makeCPUMat(activeFaultModule, hasHL),
@@ -297,14 +295,12 @@ export default function DroneModel() {
   /* ── 6. Animation refs ──────────────────────────────────────────────────── */
   const groupRef  = useRef<THREE.Group>(null);
   const hoverTime = useRef(0);
-  const tStart    = useRef<number | null>(null);
   const prevExp   = useRef(isExploded);
 
-  /* ── 6.5. Anime.js Explosion Physics ───────────────────────────────────── */
   useEffect(() => {
     parts.forEach((part) => {
-      const sd    = STAGGER[part.category] ?? 0;
-      const delay = isExploded ? sd * 1000 : (MAX_STAGGER - sd) * 1000;
+      const tier  = TIER_MAP[part.category] ?? 3;
+      const delay = isExploded ? (tier - 1) * TIER_DELAY : (MAX_TIER - tier) * TIER_DELAY;
       const target = isExploded
         ? (localExplodeOff[part.category] ?? new THREE.Vector3())
         : new THREE.Vector3();
@@ -322,49 +318,37 @@ export default function DroneModel() {
   }, [isExploded, parts, localExplodeOff]);
 
   useFrame((state, delta) => {
-    const t = state.clock.elapsedTime;
-
-    // Detect explode/assemble toggle → record transition start time
-    if (prevExp.current !== isExploded) {
-      tStart.current = t;
-      prevExp.current = isExploded;
-    }
-
-    /* ── Idle rotation + hover bob ──────────────────────────────────────── */
     if (groupRef.current) {
-      if (isRotating) groupRef.current.rotation.y += delta * 0.04; // ~2.3°/s
+      if (isRotating) groupRef.current.rotation.y += delta * 0.04;
       if (isHovering) {
         hoverTime.current += delta;
         groupRef.current.position.y = Math.sin(hoverTime.current * 1.5) * 0.1;
       } else {
-        groupRef.current.position.y = THREE.MathUtils.lerp(
-          groupRef.current.position.y, 0, delta * 2,
-        );
+        groupRef.current.position.y = THREE.MathUtils.lerp(groupRef.current.position.y, 0, delta * 2);
       }
     }
 
-    /* ── Per-part staggered explosion (Now driven by Anime.js) ──────────── */
     parts.forEach((part) => {
-      // Apply displacement to the object (in its parent = clonedScene local space)
-      part.object.position.copy(part.origPos).add(part.currentOffset);
+      const offsetVec = new THREE.Vector3(part.currentOffset.x, part.currentOffset.y, part.currentOffset.z);
+      const adjustedOffset = offsetVec.divide(part.parentScale);
+      part.object.position.copy(part.origPos).add(adjustedOffset);
+      part.object.updateMatrixWorld(true);
     });
 
-    /* ── Guide-line imperative updates ─────────────────────────────────── */
     guideGroup.children.forEach((child) => {
       const line = child as unknown as THREE.Line & { __pi: number };
       const part = parts[line.__pi];
       if (!part) return;
 
       const mat        = line.material as THREE.LineBasicMaterial;
-      const displaced  = part.currentOffset.length();
+      const offsetVec  = new THREE.Vector3(part.currentOffset.x, part.currentOffset.y, part.currentOffset.z);
+      const displaced  = offsetVec.length();
       const targetOp   = isExploded && displaced > 0.04 ? 0.28 : 0;
       mat.opacity      = THREE.MathUtils.lerp(mat.opacity, targetOp, delta * 3);
       line.visible     = mat.opacity > 0.005;
 
       if (line.visible) {
-        const attr = (line.geometry as THREE.BufferGeometry)
-          .attributes.position as THREE.BufferAttribute;
-        // Both points in clonedScene / normWrapper local space
+        const attr = (line.geometry as THREE.BufferGeometry).attributes.position as THREE.BufferAttribute;
         attr.setXYZ(0, part.origPos.x, part.origPos.y, part.origPos.z);
         const end = part.origPos.clone().add(part.currentOffset);
         attr.setXYZ(1, end.x, end.y, end.z);
@@ -373,17 +357,6 @@ export default function DroneModel() {
     });
   });
 
-  /* ── 7. Label positions (final exploded state, in groupRef space) ───────
-   *
-   *  Coordinate conversion:
-   *    groupRefPos = normScale × (origPos − modelCenter) + EXPLODE_OFF
-   *
-   *  This is because normWrapper applies:
-   *    pos_groupRef = normScale × origPos + normOffset
-   *               = normScale × origPos − normScale × modelCenter
-   *               = normScale × (origPos − modelCenter)
-   *  Then we add the EXPLODE_OFF (already in normalised groupRef space).
-   */
   const labelPosns = useMemo((): [number, number, number][] =>
     parts.map((p) => {
       const off  = EXPLODE_OFF[p.category] ?? [0, 0, 0];
@@ -397,20 +370,16 @@ export default function DroneModel() {
     }),
   [parts, normScale, modelCenter]);
 
-  /* ── 8. JSX ─────────────────────────────────────────────────────────────── */
   return (
     <group ref={groupRef}>
-      {/* Normalisation wrapper — brings any size GLB to ~4 scene units */}
       <group
         position={[normOffset.x, normOffset.y, normOffset.z]}
         scale={normScale}
       >
         <primitive object={cloned}      />
-        {/* Guide lines live in the same local space as the cloned scene */}
         <primitive object={guideGroup}  />
       </group>
 
-      {/* Floating labels — positioned in groupRef space, fade in with explode */}
       {isExploded &&
         parts.map((part, i) => {
           const info = LABELS[part.category];
@@ -436,8 +405,7 @@ export default function DroneModel() {
                   textShadow:    info.hero
                     ? "0 0 10px rgba(249,115,22,0.95), 0 0 22px rgba(249,115,22,0.55)"
                     : "none",
-                  /* Fade in slightly after the stagger animation starts */
-                  animation:     `fadeInLabel 0.4s ease forwards ${((STAGGER[part.category] ?? 0) * 1) + 0.3}s`,
+                  animation:     `fadeInLabel 0.4s ease forwards ${isExploded ? ((TIER_MAP[part.category] ?? 3) - 1) * (TIER_DELAY / 1000) + 0.3 : 0}s`,
                   opacity:       0,
                 }}
               >
@@ -450,5 +418,4 @@ export default function DroneModel() {
   );
 }
 
-/* Preload so there's no Suspense pop on first render */
 useGLTF.preload("/rc_quadcopter.glb");
