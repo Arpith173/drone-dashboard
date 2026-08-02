@@ -17,7 +17,7 @@ import anime from "animejs";
 ═══════════════════════════════════════════════════════════════════════════ */
 
 const ORANGE = "#f97316";
-const GRAPHITE_COLOR = new THREE.Color("#e8e8ea");  // off-white / light grey
+const GRAPHITE_COLOR = new THREE.Color("#141416");  // matte dark graphite/charcoal
 const JOINT_ACCENT_COLOR = new THREE.Color(ORANGE); // orange accent for mechanical joints/hinges
 
 /**
