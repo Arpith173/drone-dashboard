@@ -16,7 +16,7 @@ import * as THREE from "three";
 ═══════════════════════════════════════════════════════════════════════════ */
 
 const ORANGE = "#f97316";
-const GRAPHITE_COLOR = new THREE.Color("#141416");  // matte dark graphite/charcoal — warm, not pure black
+const GRAPHITE_COLOR = new THREE.Color("#e8e8ea");  // off-white / light grey
 const JOINT_ACCENT_COLOR = new THREE.Color(ORANGE); // orange accent for mechanical joints/hinges
 
 /**
@@ -73,21 +73,36 @@ function categorize(
   center: THREE.Vector3,
   size: THREE.Vector3,
 ): string {
-  const n   = obj.name.toLowerCase();
-  const rx  = centroid.x - center.x;
-  const ry  = centroid.y - center.y;
-  const rz  = centroid.z - center.z;
+  const n = obj.name;
+
+  // Hard-mapped explicit Object_N identifiers to specific components based on centroid analysis
+  switch (n) {
+    case "Object_7":  return "CPU_BOARD";
+    case "Object_8":  return "SHELL_TOP";
+    case "Object_4":
+    case "Object_6":  return "ARM_PP";
+    case "Object_2":
+    case "Object_3":  return "ARM_PN";
+    case "Object_9":
+    case "Object_10": return "ARM_NP";
+    case "Object_5":
+    case "Object_11": return "ARM_NN";
+  }
+
+  // Fallback for any other GLBs
+  const nLower = n.toLowerCase();
+  const rx = centroid.x - center.x;
+  const rz = centroid.z - center.z;
+  const ry = centroid.y - center.y;
   const dxz = Math.hypot(rx, rz);
   const quad = () => (rx >= 0 ? (rz >= 0 ? "ARM_PP" : "ARM_PN") : (rz >= 0 ? "ARM_NP" : "ARM_NN"));
 
-  // Name-based hints (reliable for well-exported GLBs)
-  if (/cpu|processor|board|computer|logic|mainboard/.test(n)) return "CPU_BOARD";
-  if (/camera|cam|gimbal|lens/.test(n))                        return "CAMERA";
-  if (/top|lid|upper|cover/.test(n))                           return "SHELL_TOP";
-  if (/bottom|base|lower|land|chassis/.test(n))                return "SHELL_BOTTOM";
-  if (/arm|rotor|prop|motor|blade/.test(n))                    return quad();
+  if (/cpu|processor|board|computer|logic|mainboard/.test(nLower)) return "CPU_BOARD";
+  if (/camera|cam|gimbal|lens/.test(nLower))                        return "CAMERA";
+  if (/top|lid|upper|cover/.test(nLower))                           return "SHELL_TOP";
+  if (/bottom|base|lower|land|chassis/.test(nLower))                return "SHELL_BOTTOM";
+  if (/arm|rotor|prop|motor|blade/.test(nLower))                    return quad();
 
-  // Bounding-box positional fallback
   const yT  = size.y * 0.18;
   const xzT = Math.max(size.x, size.z) * 0.28;
   if (dxz > xzT)        return quad();
@@ -206,15 +221,14 @@ export default function DroneModel() {
 
   /* ── 3. Extract separable parts ────────────────────────────────────────── */
   const parts: Part[] = useMemo(() => {
-    // Collect top-level children; drill one level deeper if there's only one root group
-    let cands = cloned.children.filter(
-      (c) => c instanceof THREE.Mesh || c instanceof THREE.Group
-    );
-    if (cands.length <= 1 && (cands[0]?.children.length ?? 0) > 1) {
-      cands = cands[0].children.filter(
-        (c) => c instanceof THREE.Mesh || c instanceof THREE.Group
-      );
+    // Collect top-level children; drill deeper until we find multiple children
+    let cands = cloned.children;
+    while (cands.length === 1 && cands[0].children.length > 0) {
+      cands = cands[0].children;
     }
+    // Filter valid objects for parts
+    cands = cands.filter((c) => c.isMesh || c.isGroup || c.isObject3D);
+
     // Fallback: model is a single unified mesh — animate as one piece
     if (cands.length <= 1) {
       return [{
