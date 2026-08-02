@@ -227,7 +227,7 @@ export default function DroneModel() {
       cands = cands[0].children;
     }
     // Filter valid objects for parts
-    cands = cands.filter((c) => c.isMesh || c.isGroup || c.isObject3D);
+    cands = cands.filter((c) => c.type === "Mesh" || c.type === "Group" || c.type === "Object3D");
 
     // Fallback: model is a single unified mesh — animate as one piece
     if (cands.length <= 1) {
