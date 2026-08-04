@@ -241,6 +241,7 @@ function RightPanel() {
             </div>
             <input type="checkbox" className="hidden" checked={isHovering} onChange={(e) => setIsHovering(e.target.checked)} />
           </label>
+
         </div>
       </div>
     </div>

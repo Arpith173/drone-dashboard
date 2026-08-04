@@ -18,6 +18,20 @@ export type LiveMonitorState =
   | { type: "ALU_INJECTED"; aluId: number; badValue: string; goodValue: string }
   | { type: "ALU_RECOVERED"; goodValue: string };
 
+export interface FaultStats {
+  sec: number;
+  ded: number;
+  alu: number;
+  total: number;
+}
+
+export interface FaultHistoryPoint {
+  time: string;
+  sec: number;
+  ded: number;
+  alu: number;
+}
+
 interface DashboardState {
   // System Status
   processorState: "Running" | "Degraded" | "Recovering" | "Halted";
@@ -38,12 +52,20 @@ interface DashboardState {
   cameraResetTrigger: number;
   triggerCameraReset: () => void;
   
+  // Explosion state
+  explosionFactor: number;
+  setExplosionFactor: (v: number) => void;
+  
   // Live Monitor State
   liveMonitor: LiveMonitorState;
   
   // Toasts
   toasts: ToastMessage[];
   removeToast: (id: number) => void;
+
+  // Analytics
+  faultStats: FaultStats;
+  faultHistory: FaultHistoryPoint[];
 
   // Actions
   injectFault: (type: FaultType, reg?: string, bit?: string, alu?: string) => void;
@@ -68,12 +90,29 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [liveMonitor, setLiveMonitor] = useState<LiveMonitorState>({ type: "IDLE", value: "0x00000000" });
   
   const [cameraResetTrigger, setCameraResetTrigger] = useState(0);
+  const [explosionFactor, setExplosionFactor] = useState(0);
   
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [isDemoActive, setIsDemoActive] = useState(true);
 
+  // Analytics State
+  const [faultStats, setFaultStats] = useState<FaultStats>({ sec: 0, ded: 0, alu: 0, total: 0 });
+  const [faultHistory, setFaultHistory] = useState<FaultHistoryPoint[]>([]);
+
   // We need to keep track of persistent faults (like DED)
   const [hasPersistentFault, setHasPersistentFault] = useState(false);
+
+  useEffect(() => {
+    if (!isDemoActive) return;
+    const interval = setInterval(() => {
+      setFaultHistory(prev => {
+        const now = new Date();
+        const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+        return [...prev, { time: timeStr, ...faultStats }].slice(-20);
+      });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isDemoActive, faultStats]);
 
   const addToast = (message: string, type: ToastMessage["type"]) => {
     const id = Date.now() + Math.random();
@@ -102,6 +141,9 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     setHighlightedModules([]);
     setLiveMonitor({ type: "IDLE", value: "0x00000000" });
     setHasPersistentFault(false);
+    setExplosionFactor(0);
+    setFaultStats({ sec: 0, ded: 0, alu: 0, total: 0 });
+    setFaultHistory([]);
     triggerCameraReset();
     addToast("System reset.", "info");
   };
@@ -111,6 +153,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     if (hasPersistentFault && type !== "MODE") return;
 
     if (type === "SEC") {
+      setFaultStats(s => ({ ...s, sec: s.sec + 1, total: s.total + 1 }));
       const targetReg = reg || "x5";
       const targetBit = bit || "7";
       setActiveFaultModule("CPU_SEC");
@@ -130,6 +173,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       }, 800);
       
     } else if (type === "DED") {
+      setFaultStats(s => ({ ...s, ded: s.ded + 1, total: s.total + 1 }));
       const targetReg = reg || "x9";
       setProcessorState("Degraded");
       setHasPersistentFault(true);
@@ -140,6 +184,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       // Note: This does NOT auto-recover. It persists until resetDemo.
       
     } else if (type === "ALU") {
+      setFaultStats(s => ({ ...s, alu: s.alu + 1, total: s.total + 1 }));
       const targetAlu = parseInt(alu || "0", 10);
       setActiveFaultModule(`ALU_${targetAlu}`);
       setProcessorState("Recovering");
@@ -200,8 +245,10 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         highlightedModules, setHighlightedModules, toggleHighlightedModule,
         activeFaultModule,
         cameraResetTrigger, triggerCameraReset,
+        explosionFactor, setExplosionFactor,
         liveMonitor,
         toasts, removeToast,
+        faultStats, faultHistory,
         injectFault, resetDemo, isDemoActive, setIsDemoActive,
       }}
     >

@@ -138,9 +138,32 @@
       linear-gradient(to bottom, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
   }
 
+  /* Radial vignette used on every page to focus the eye on the 3-D subject */
+  .bg-radial-gradient {
+    background-image: radial-gradient(ellipse at center, var(--tw-gradient-from, transparent) 0%, var(--tw-gradient-to, rgba(0,0,0,0.8)) 100%);
+  }
+
+  /* Hide scrollbar while keeping scroll functionality */
+  .no-scrollbar {
+    -ms-overflow-style: none;   /* IE / Edge */
+    scrollbar-width: none;      /* Firefox */
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;              /* Chrome / Safari */
+  }
+
   @keyframes fadeInLabel {
     from { opacity: 0; transform: translateY(4px); }
     to   { opacity: 1; transform: translateY(0);   }
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 4px rgba(249,115,22,0.4); }
+    50%       { box-shadow: 0 0 16px rgba(249,115,22,0.9); }
+  }
+
+  .animate-pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
   }
 
 }

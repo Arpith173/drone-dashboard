@@ -8,6 +8,9 @@ import anime from "animejs";
 import * as THREE from "three";
 import Navigation from "@/components/Navigation";
 import { SharedScene } from "@/components/SharedScene";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+
+import { SubsystemsSharedScene } from "@/components/SubsystemsSharedScene";
 
 function SubsystemsPanel() {
   const { highlightedModules, toggleHighlightedModule } = useDashboard();
@@ -80,12 +83,14 @@ function SubsystemsPageContent() {
       <SubsystemsPanel />
 
       <div className="absolute inset-0 z-0">
-        <Canvas
-          shadows={{ type: THREE.PCFShadowMap }}
-          camera={{ position: [8, 4, 8], fov: 45 }}
-        >
-          <SharedScene staticExploded={true} />
-        </Canvas>
+        <ErrorBoundary fallbackMessage="Incomplete GLB: Shell geometry (canopy/propeller/arm) is missing, and/or file contains old duplicate nodes (Sketchfab_model/Object_N) from an incomplete cleanup.">
+          <Canvas
+            shadows={{ type: THREE.PCFShadowMap }}
+            camera={{ position: [10, 0, 5], fov: 50 }}
+          >
+            <SubsystemsSharedScene staticExploded={true} />
+          </Canvas>
+        </ErrorBoundary>
       </div>
     </div>
   );

@@ -25,11 +25,6 @@ const JOINT_ACCENT_COLOR = new THREE.Color(ORANGE); // orange accent for mechani
  *  ~2-unit offsets feel proportionally correct.)
  */
 const EXPLODE_OFF: Record<string, [number, number, number]> = {
-  // Tier 1 - move outward and slightly down together
-  ARM_PP:       [ 0, -0.75, 0],
-  ARM_PN:       [ 0, -0.75, 0],
-  ARM_NP:       [ 0, -0.75, 0],
-  ARM_NN:       [ 0, -0.75, 0],
   // Tier 2 - vertically up
   SHELL_TOP:    [0,  1.5, 0],
   // Tier 3 - CPU (focal point, extra clearance)
@@ -130,6 +125,9 @@ interface Part {
   object:        THREE.Object3D;
   origPos:       THREE.Vector3;
   parentScale:   THREE.Vector3;
+  trajectory:    THREE.Vector3;
+  isPropeller:   boolean;
+  isCore:        boolean;
 }
 
 const PROC_SUBS = [
@@ -146,6 +144,7 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
   const {
     isHovering, isRotating,
     highlightedModules, activeFaultModule,
+    explosionFactor,
   } = useDashboard();
 
   const { scene: rawScene } = useGLTF("/rc_quadcopter.glb");
@@ -194,15 +193,6 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
     return { cloned, normScale, normOffset, modelCenter: ct };
   }, [rawScene]);
 
-  /* ── 2. Explode offsets converted to scene-local space ─────────────────── */
-  const localExplodeOff = useMemo(() => {
-    const result: Record<string, THREE.Vector3> = {};
-    for (const [k, v] of Object.entries(EXPLODE_OFF)) {
-      result[k] = new THREE.Vector3(v[0] / normScale, v[1] / normScale, v[2] / normScale);
-    }
-    return result;
-  }, [normScale]);
-
   /* ── 3. Extract separable parts ────────────────────────────────────────── */
   const parts: Part[] = useMemo(() => {
     let cands = cloned.children;
@@ -216,6 +206,9 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
         object:   cloned,
         origPos:  new THREE.Vector3(),
         parentScale: new THREE.Vector3(1, 1, 1),
+        trajectory: new THREE.Vector3(),
+        isPropeller: false,
+        isCore: true,
       }];
     }
 
@@ -223,7 +216,7 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
     const center = box.getCenter(new THREE.Vector3());
     const size   = box.getSize(new THREE.Vector3());
 
-    return cands.map((obj): Part => {
+    const rawParts = cands.map((obj) => {
       const b       = new THREE.Box3().setFromObject(obj);
       const centroid = b.getCenter(new THREE.Vector3());
       
@@ -239,6 +232,57 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
         object:        obj,
         origPos:       obj.position.clone(),
         parentScale:   cumulativeScale,
+        centroid:      centroid,
+      };
+    });
+
+    // Compute arm group centroids for perfectly radial trajectories
+    const armCentroids: Record<string, THREE.Vector3> = {};
+    const armCounts: Record<string, number> = {};
+    
+    rawParts.forEach(rp => {
+      if (rp.category.startsWith("ARM_")) {
+        if (!armCentroids[rp.category]) {
+          armCentroids[rp.category] = new THREE.Vector3();
+          armCounts[rp.category] = 0;
+        }
+        armCentroids[rp.category].add(rp.origPos);
+        armCounts[rp.category]++;
+      }
+    });
+    
+    for (const key in armCentroids) {
+      armCentroids[key].divideScalar(armCounts[key]);
+    }
+
+    return rawParts.map((rp): Part => {
+      const nLower = rp.object.name.toLowerCase();
+      const isPropeller = /propeller|prop|rotor|blade/.test(nLower);
+      const isCore = /canopy|frame_spine|electronics|fc|board|cpu|shell|camera/.test(nLower) || 
+                     ["CPU_BOARD", "SHELL_TOP", "SHELL_BOTTOM", "CAMERA", "ROOT"].includes(rp.category);
+      
+      let trajectory = new THREE.Vector3();
+      
+      if (!isCore && rp.category.startsWith("ARM_")) {
+        // Procedural radial direction from core to arm centroid
+        const groupCentroid = armCentroids[rp.category];
+        trajectory.copy(groupCentroid).setY(0).normalize().multiplyScalar(2.0);
+      } else {
+        // Core components only move strictly up/down using predefined offsets
+        const off = EXPLODE_OFF[rp.category];
+        if (off) {
+          trajectory.set(0, off[1], 0);
+        }
+      }
+
+      return {
+        category:      rp.category,
+        object:        rp.object,
+        origPos:       rp.origPos,
+        parentScale:   rp.parentScale,
+        trajectory:    trajectory,
+        isPropeller:   isPropeller,
+        isCore:        isCore,
       };
     });
   }, [cloned]);
@@ -278,8 +322,16 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
   /* ── 6. Animation refs ──────────────────────────────────────────────────── */
   const groupRef  = useRef<THREE.Group>(null);
   const hoverTime = useRef(0);
+  const currentExplodeFactor = useRef(0);
 
   useFrame((state, delta) => {
+    const targetExplode = staticExploded ? 1.0 : explosionFactor;
+    currentExplodeFactor.current = THREE.MathUtils.lerp(
+      currentExplodeFactor.current,
+      targetExplode,
+      delta * 4.0
+    );
+
     if (groupRef.current) {
       if (isRotating) groupRef.current.rotation.y += delta * 0.04;
       if (isHovering) {
@@ -290,8 +342,16 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
       }
     }
 
+    const factor = currentExplodeFactor.current;
+
     parts.forEach((part) => {
-      const targetOff = staticExploded ? (localExplodeOff[part.category] ?? new THREE.Vector3()) : new THREE.Vector3();
+      const targetOff = part.trajectory.clone().multiplyScalar(factor / normScale);
+      
+      if (part.isPropeller && factor > 0.5) {
+        const propLiftFactor = (factor - 0.5) * 2.0; 
+        targetOff.y += (1.5 * propLiftFactor) / normScale;
+      }
+      
       const adjustedOffset = targetOff.clone().divide(part.parentScale);
       part.object.position.copy(part.origPos).add(adjustedOffset);
       part.object.updateMatrixWorld(true);
@@ -303,11 +363,16 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
       if (!part) return;
 
       const mat        = line.material as THREE.LineBasicMaterial;
-      const targetOff  = staticExploded ? (localExplodeOff[part.category] ?? new THREE.Vector3()) : new THREE.Vector3();
+      const targetOff  = part.trajectory.clone().multiplyScalar(factor / normScale);
+      
+      if (part.isPropeller && factor > 0.5) {
+        const propLiftFactor = (factor - 0.5) * 2.0; 
+        targetOff.y += (1.5 * propLiftFactor) / normScale;
+      }
+      
       const displaced  = targetOff.length();
       
-      // Static view means lines are either fully visible or hidden immediately
-      mat.opacity      = staticExploded && displaced > 0.04 ? 0.28 : 0;
+      mat.opacity      = displaced > 0.04 ? factor * 0.28 : 0;
       line.visible     = mat.opacity > 0.005;
 
       if (line.visible) {
@@ -322,13 +387,14 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
 
   const labelPosns = useMemo((): [number, number, number][] =>
     parts.map((p) => {
-      const off  = EXPLODE_OFF[p.category] ?? [0, 0, 0];
       const info = LABELS[p.category];
       const yX   = info?.hero ? 0.65 : 0.32;
+      const t = p.trajectory;
+      const propLift = p.isPropeller ? 1.5 : 0;
       return [
-        (p.origPos.x - modelCenter.x) * normScale + off[0],
-        (p.origPos.y - modelCenter.y) * normScale + off[1] + yX,
-        (p.origPos.z - modelCenter.z) * normScale + off[2],
+        (p.origPos.x - modelCenter.x) * normScale + t.x,
+        (p.origPos.y - modelCenter.y) * normScale + t.y + propLift + yX,
+        (p.origPos.z - modelCenter.z) * normScale + t.z,
       ];
     }),
   [parts, normScale, modelCenter]);
