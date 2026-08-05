@@ -324,7 +324,9 @@ export default function DroneModel({ staticExploded = false }: { staticExploded?
   const hoverTime = useRef(0);
   const currentExplodeFactor = useRef(0);
 
-  useFrame((state, delta) => {
+  useFrame((state, rawDelta) => {
+    // See DroneCameraController: unclamped deltas push lerp alphas past 1.
+    const delta = Math.min(rawDelta, 1 / 30);
     const targetExplode = staticExploded ? 1.0 : explosionFactor;
     currentExplodeFactor.current = THREE.MathUtils.lerp(
       currentExplodeFactor.current,
