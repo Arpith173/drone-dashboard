@@ -8,15 +8,15 @@
  * +/-5.3, so the "exploded view" rendered an empty screen.
  *
  * This recomputes the final on-screen bounds straight from the .glb and fails if
- * anything leaves the frame. Run: node src/components/explodeLayout.check.js
+ * anything leaves the frame. Run: npm run check:explode
  */
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 
-const GLB = path.join(__dirname, "..", "..", "public", "rc_quadcopter_v3.glb");
+const GLB = path.join(__dirname, "..", "public", "rc_quadcopter_v3.glb");
 
-// Keep in sync with SubsystemsDroneModel.tsx.
+// Keep in sync with src/components/SubsystemsDroneModel.tsx.
 const LAYER_ORDER = [
   "Layer_CPU", "Layer_RegisterFile", "Layer_ECCDecoder", "Layer_ALUCluster",
   "Layer_MajorityVoter", "Layer_InstructionMemory", "Layer_DataMemory",

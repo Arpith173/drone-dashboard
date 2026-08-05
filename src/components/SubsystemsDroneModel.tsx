@@ -60,7 +60,19 @@ const PROP_RADIAL   = 0.5;
 const LEG_Y         = -3.60;
 const LEG_RADIAL    = 0.9;
 
+/** How far out from a board its leader line runs, in world units. */
+const LABEL_DIST = 1.95;
+
+// Scratch objects reused every frame — allocating these in the loop would churn
+// garbage 60 times a second.
+const right     = new THREE.Vector3();
+const boardAt   = new THREE.Vector3();
+const anchorAt  = new THREE.Vector3();
+const lineFrom  = new THREE.Vector3();
+const worldQuat = new THREE.Quaternion();
+
 // Pre-built so the per-frame emissive update never re-parses a colour string.
+const LEADER_IDLE = new THREE.Color("#5a5a66");
 const GLOW_WARN = new THREE.Color("#f59e0b");
 const GLOW_ERR  = new THREE.Color("#ef4444");
 const GLOW_OK   = new THREE.Color("#22c55e");
@@ -76,6 +88,18 @@ function faultGlow(fault: string | null): { node: string; color: THREE.Color; in
   if (fault?.startsWith("ALU_")) return { node: "Layer_ALUCluster",    color: GLOW_ERR,  intensity: 1.8 };
   if (fault === "TMR_RECOVER")   return { node: "Layer_MajorityVoter", color: GLOW_OK,   intensity: 2.0 };
   return null;
+}
+
+interface Label {
+  name: string;
+  text: string;
+  accent: THREE.Color;
+  /** Board centre at rest, in rendered world units. */
+  rest: THREE.Vector3;
+  /** Displacement applied at full explosion. */
+  target: THREE.Vector3;
+  /** Distance from the board centre at which its leader line starts. */
+  startAt: number;
 }
 
 interface Part {
@@ -99,6 +123,8 @@ export default function SubsystemsDroneModel({ staticExploded = true }: { static
   const groupRef = useRef<THREE.Group>(null);
   const hoverTime = useRef(0);
   const currentExplodeFactor = useRef(0);
+  const labelAnchors = useRef<(THREE.Group | null)[]>([]);
+  const leadersRef = useRef<THREE.LineSegments>(null);
 
   const { scene: rawScene } = useGLTF("/rc_quadcopter_v3.glb");
 
@@ -122,7 +148,7 @@ export default function SubsystemsDroneModel({ staticExploded = true }: { static
     const rendered = (v: THREE.Vector3) => v.clone().multiplyScalar(normScale).add(normOffset);
 
     const parts:  Part[] = [];
-    const labels: { name: string; text: string; accent: string; pos: [number, number, number] }[] = [];
+    const labels: Label[] = [];
 
     cloned.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
@@ -191,20 +217,31 @@ export default function SubsystemsDroneModel({ staticExploded = true }: { static
 
       const text = LAYER_MAP[child.name];
       if (text) {
+        const bs = new THREE.Box3().setFromObject(child).getSize(new THREE.Vector3());
         labels.push({
           name:   child.name,
           text,
-          accent: LAYER_ACCENT[child.name],
-          // Anchored on the board itself. Anchoring it off to the side instead
-          // puts it at a different depth, and perspective then slides it far
-          // enough down the screen to sit against the wrong board.
-          pos: [restCenter.x, restCenter.y + target.y, restCenter.z],
+          accent: new THREE.Color(LAYER_ACCENT[child.name]),
+          rest:   restCenter.clone(),
+          target: target.clone(),
+          // Where the leader line leaves the board, just clear of its edge.
+          startAt: (Math.max(bs.x, bs.z) * normScale) / 2 + 0.1,
         });
       }
     });
 
+    labels.sort((a, b) => LAYER_ORDER.indexOf(a.name) - LAYER_ORDER.indexOf(b.name));
+
     return { cloned, normScale, normOffset, parts, labels };
   }, [rawScene]);
+
+  // Backing arrays for the leader lines; the endpoints themselves are rewritten
+  // each frame, since the leaders swing to stay on the camera's right as the
+  // model turns.
+  const leaderBuffers = useMemo(() => ({
+    position: new Float32Array(labels.length * 6),
+    color:    new Float32Array(labels.length * 6),
+  }), [labels]);
 
   useFrame((state, rawDelta) => {
     // See DroneCameraController: unclamped deltas push lerp alphas past 1.
@@ -244,6 +281,40 @@ export default function SubsystemsDroneModel({ staticExploded = true }: { static
         p.mat.emissive.copy(NO_EMISSIVE);
       }
     }
+
+    if (!groupRef.current) return;
+
+    // Leaders and labels ride the camera's right-hand side, so they never end up
+    // pointing into or behind the stack as the model turns.
+    right.setFromMatrixColumn(state.camera.matrixWorld, 0)
+      .applyQuaternion(groupRef.current.getWorldQuaternion(worldQuat).invert())
+      .setY(0);
+    if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
+    else right.normalize();
+
+    const geom = leadersRef.current?.geometry;
+    if (!geom) return;
+    const pos = geom.attributes.position as THREE.BufferAttribute;
+    const col = geom.attributes.color as THREE.BufferAttribute;
+
+    labels.forEach((l, i) => {
+      boardAt.copy(l.rest).addScaledVector(l.target, f);
+
+      anchorAt.copy(boardAt).addScaledVector(right, LABEL_DIST);
+      labelAnchors.current[i]?.position.copy(anchorAt);
+
+      lineFrom.copy(boardAt).addScaledVector(right, l.startAt);
+      pos.setXYZ(i * 2,     lineFrom.x, lineFrom.y, lineFrom.z);
+      pos.setXYZ(i * 2 + 1, anchorAt.x, anchorAt.y, anchorAt.z);
+
+      const lit = highlightedModules.includes(LAYER_MAP[l.name]);
+      const c = lit ? l.accent : LEADER_IDLE;
+      col.setXYZ(i * 2,     c.r, c.g, c.b);
+      col.setXYZ(i * 2 + 1, c.r, c.g, c.b);
+    });
+
+    pos.needsUpdate = true;
+    col.needsUpdate = true;
   });
 
   return (
@@ -252,27 +323,49 @@ export default function SubsystemsDroneModel({ staticExploded = true }: { static
         <primitive object={cloned} />
       </group>
 
-      {staticExploded && labels.map((l) => (
-        <Html key={l.name} position={l.pos} center distanceFactor={13} style={{ pointerEvents: "none" }}>
-          <span
-            style={{
-              display:       "block",
-              // Screen-space nudge clear of the board, so the anchor stays exact.
-              transform:     "translateX(110px)",
-              fontFamily:    "monospace",
-              fontSize:      "9px",
-              textTransform: "uppercase",
-              letterSpacing: "0.14em",
-              whiteSpace:    "nowrap",
-              userSelect:    "none",
-              color:         highlightedModules.includes(LAYER_MAP[l.name]) ? l.accent : "rgba(255,255,255,0.45)",
-              textShadow:    highlightedModules.includes(LAYER_MAP[l.name]) ? `0 0 10px ${l.accent}` : "none",
-            }}
-          >
-            {l.text}
-          </span>
-        </Html>
-      ))}
+      {/* frustumCulled off: the bounding sphere is built from the initial
+          all-zero endpoints, so the lines would be culled once they move. */}
+      {staticExploded && (
+        <lineSegments ref={leadersRef} frustumCulled={false}>
+          <bufferGeometry>
+            <bufferAttribute attach="attributes-position" args={[leaderBuffers.position, 3]} />
+            <bufferAttribute attach="attributes-color" args={[leaderBuffers.color, 3]} />
+          </bufferGeometry>
+          <lineBasicMaterial vertexColors transparent opacity={0.55} />
+        </lineSegments>
+      )}
+
+      {staticExploded && labels.map((l, i) => {
+        const lit = highlightedModules.includes(LAYER_MAP[l.name]);
+        const accent = `#${l.accent.getHexString()}`;
+        return (
+          // The group is moved to the leader's far end each frame; Html reads its
+          // parent's world matrix, so the text lands exactly on the line end
+          // rather than being nudged into place in screen space.
+          <group key={l.name} ref={(g) => { labelAnchors.current[i] = g; }}>
+            <Html distanceFactor={13} style={{ pointerEvents: "none" }}>
+              <span
+                style={{
+                  display:       "block",
+                  transform:     "translateY(-50%)",   // centre the text on the line end
+                  paddingLeft:   "7px",
+                  fontFamily:    "monospace",
+                  fontSize:      "9px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.14em",
+                  whiteSpace:    "nowrap",
+                  userSelect:    "none",
+                  transition:    "color 200ms ease",
+                  color:         lit ? accent : "rgba(255,255,255,0.5)",
+                  textShadow:    lit ? `0 0 10px ${accent}` : "none",
+                }}
+              >
+                {l.text}
+              </span>
+            </Html>
+          </group>
+        );
+      })}
     </group>
   );
 }
