@@ -78,6 +78,8 @@ interface DashboardState {
   // Actions
   injectFault: (type: FaultType, reg?: string, bit?: string, alu?: string) => void;
   resetDemo: () => void;
+  isDemoActive: boolean;
+  setIsDemoActive: (v: boolean) => void;
   
   // Hardware Data Architecture
   dataSourceInfo: DataSourceInfo;
@@ -109,6 +111,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [explosionFactor, setExplosionFactor] = useState(0);
   
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [isDemoActive, setIsDemoActive] = useState(true);
 
   // Analytics State
   const [faultStats, setFaultStats] = useState<FaultStats>({ sec: 0, ded: 0, alu: 0, total: 0 });
@@ -203,10 +206,6 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     simulatedSource.current.onEvent(handleFaultEvent);
     uartSource.current.onEvent(handleFaultEvent);
     
-    // Start with simulated by default
-    simulatedSource.current.start();
-    setDataSourceInfo({ isConnected: false, sourceName: simulatedSource.current.sourceName });
-    
     return () => {
       simulatedSource.current.stop();
       uartSource.current.stop();
@@ -214,24 +213,27 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (isDemoActive && !dataSourceInfo.isConnected) {
+      simulatedSource.current.start();
+    } else {
+      simulatedSource.current.stop();
+    }
+  }, [isDemoActive, dataSourceInfo.isConnected]);
+
   const connectFPGA = async () => {
     try {
       await uartSource.current.start();
-      // Stop simulated loop
-      simulatedSource.current.stop();
       setDataSourceInfo({ isConnected: true, sourceName: uartSource.current.sourceName });
       addToast("Connected to live FPGA hardware", "success");
     } catch (e: any) {
       addToast(e.message || "Failed to connect to FPGA", "error");
-      // Fallback
-      simulatedSource.current.start();
       setDataSourceInfo({ isConnected: false, sourceName: simulatedSource.current.sourceName });
     }
   };
 
   const disconnectFPGA = async () => {
     await uartSource.current.stop();
-    simulatedSource.current.start();
     setDataSourceInfo({ isConnected: false, sourceName: simulatedSource.current.sourceName });
     addToast("Disconnected from hardware. Using simulated data.", "info");
   };
@@ -314,6 +316,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         toasts, removeToast,
         faultStats, faultHistory,
         injectFault, resetDemo,
+        isDemoActive, setIsDemoActive,
         dataSourceInfo, connectFPGA, disconnectFPGA, eventCounter
       }}
     >

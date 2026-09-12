@@ -437,9 +437,49 @@ import { useDashboard } from "@/lib/DashboardContext";
 export default function SimulationPage() {
   const { activeFaultModule, injectFault, resetDemo, liveMonitor, toasts } = useDashboard();
   
-  const activeFault = activeFaultModule === "CPU_DED" ? "DED" 
+  const globalFault = activeFaultModule === "CPU_DED" ? "DED" 
                     : (activeFaultModule === "CPU_SEC" || (activeFaultModule && activeFaultModule.startsWith("ALU_"))) ? "SEC" 
                     : "NORMAL";
+
+  const [isSynced, setIsSynced] = useState(true);
+  const [localFault, setLocalFault] = useState<"NORMAL" | "SEC" | "DED">("NORMAL");
+  const [localEvents, setLocalEvents] = useState<{ id: number, time: string, text: string }[]>([]);
+
+  const localFaultRef = useRef(localFault);
+  useEffect(() => {
+    localFaultRef.current = localFault;
+  }, [localFault]);
+
+  const addLocalEvent = (text: string) => {
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+    setLocalEvents(prev => [...prev, { id: Date.now(), time: timeStr, text }]);
+  };
+
+  const injectLocalSEC = () => {
+    if (localFaultRef.current === "DED") return;
+    setLocalFault("SEC");
+    addLocalEvent("SEC injected, auto-correcting...");
+    setTimeout(() => {
+      if (localFaultRef.current !== "DED") {
+        setLocalFault("NORMAL");
+        addLocalEvent("SEC corrected — flight nominal");
+      }
+    }, 1500);
+  };
+
+  const injectLocalDED = () => {
+    if (localFaultRef.current === "DED") return;
+    setLocalFault("DED");
+    addLocalEvent("DED detected, safe land initiated");
+  };
+
+  const resetLocalSim = () => {
+    setLocalFault("NORMAL");
+    addLocalEvent("Simulation reset to nominal flight");
+  };
+                    
+  const activeFault = isSynced ? globalFault : localFault;
                     
   // DED State tracking for HUD
   const [dedState, setDedState] = useState<"DETECTED" | "LANDING" | "LANDED">("DETECTED");
@@ -469,12 +509,14 @@ export default function SimulationPage() {
     statusText = "FAULT DETECTED — CORRECTED";
   }
 
-  // Build events log from toasts for visual display
-  const events = toasts.map(t => ({
-    id: t.id,
-    time: new Date().toLocaleTimeString(), // approximate
-    text: t.message
-  }));
+  // Build events log from toasts for visual display if synced, else local events
+  const events = isSynced 
+    ? toasts.map(t => ({
+        id: t.id,
+        time: new Date().toLocaleTimeString(),
+        text: t.message
+      }))
+    : localEvents;
 
   return (
     <div className="relative w-full h-screen bg-[#0d0d10] overflow-hidden">
@@ -545,23 +587,35 @@ export default function SimulationPage() {
 
       {/* Manual Injection Buttons */}
       <div className="absolute bottom-6 right-6 bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-4 flex flex-col gap-3 shadow-lg pointer-events-auto z-10">
-        <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-1 border-b border-white/10 pb-1">
-          Sandbox Controls
-        </h3>
+        <div 
+          className="flex justify-between items-center mb-3 pb-2 border-b border-white/10"
+        >
+          <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest">
+            Sandbox Controls
+          </h3>
+          <button 
+            onClick={() => setIsSynced(!isSynced)}
+            className={`text-[10px] font-bold px-2 py-1 rounded transition-colors ${
+              isSynced ? "bg-green-500/20 text-green-400 border border-green-500/50" : "bg-white/10 text-white/50 border border-white/20"
+            }`}
+          >
+            {isSynced ? "SYNCED" : "MANUAL"}
+          </button>
+        </div>
         <button 
-          onClick={() => injectFault("SEC")} 
+          onClick={() => isSynced ? injectFault("SEC") : injectLocalSEC()} 
           className="bg-amber-500/10 text-amber-500 border border-amber-500 hover:bg-amber-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors"
         >
           INJECT SEC / TMR FAULT
         </button>
         <button 
-          onClick={() => injectFault("DED")} 
+          onClick={() => isSynced ? injectFault("DED") : injectLocalDED()} 
           className="bg-red-500/10 text-red-500 border border-red-500 hover:bg-red-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors"
         >
           INJECT DED FAULT
         </button>
         <button 
-          onClick={resetDemo} 
+          onClick={() => isSynced ? resetDemo() : resetLocalSim()} 
           className="bg-white/5 text-white/70 border border-white/20 hover:bg-white/10 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors mt-2"
         >
           RESET FLIGHT
