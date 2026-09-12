@@ -279,7 +279,7 @@ Drone.displayName = "Drone";
 
 useGLTF.preload("/rc_quadcopter_v3.glb");
 
-function FlightTrail({ droneRef, activeFault }: { droneRef: React.RefObject<THREE.Group>, activeFault: string }) {
+function FlightTrail({ droneRef, activeFault }: { droneRef: React.RefObject<THREE.Group | null>, activeFault: string }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const trailRef = useRef<{pos: THREE.Vector3, age: number}[]>([]);
   const dummy = useMemo(() => new THREE.Object3D(), []);
