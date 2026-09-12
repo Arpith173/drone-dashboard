@@ -432,50 +432,26 @@ function SceneContainer({ activeFault }: { activeFault: "NORMAL" | "SEC" | "DED"
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN PAGE & HUD
 // ═══════════════════════════════════════════════════════════════════════════
+import { useDashboard } from "@/lib/DashboardContext";
 
 export default function SimulationPage() {
-  const [activeFault, setActiveFault] = useState<"NORMAL" | "SEC" | "DED">("NORMAL");
-  const [events, setEvents] = useState<{ id: number, time: string, text: string }[]>([]);
+  const { activeFaultModule, injectFault, resetDemo, liveMonitor, toasts } = useDashboard();
+  
+  const activeFault = activeFaultModule === "CPU_DED" ? "DED" 
+                    : (activeFaultModule === "CPU_SEC" || (activeFaultModule && activeFaultModule.startsWith("ALU_"))) ? "SEC" 
+                    : "NORMAL";
+                    
+  // DED State tracking for HUD
   const [dedState, setDedState] = useState<"DETECTED" | "LANDING" | "LANDED">("DETECTED");
-
-  const activeFaultRef = useRef(activeFault);
+  
   useEffect(() => {
-    activeFaultRef.current = activeFault;
+    if (activeFault === "DED") {
+      setDedState("DETECTED");
+      const t1 = setTimeout(() => setDedState("LANDING"), 1000);
+      const t2 = setTimeout(() => setDedState("LANDED"), 4000);
+      return () => { clearTimeout(t1); clearTimeout(t2); };
+    }
   }, [activeFault]);
-
-  const addEvent = (text: string) => {
-    const now = new Date();
-    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
-    setEvents(prev => [...prev, { id: Date.now(), time: timeStr, text }]);
-  };
-
-  const injectSEC = () => {
-    if (activeFaultRef.current === "DED") return;
-    setActiveFault("SEC");
-    addEvent("SEC injected, auto-correcting...");
-    
-    setTimeout(() => {
-      if (activeFaultRef.current !== "DED") {
-        setActiveFault("NORMAL");
-        addEvent("SEC corrected — flight nominal");
-      }
-    }, 1500);
-  };
-
-  const injectDED = () => {
-    if (activeFaultRef.current === "DED") return;
-    setActiveFault("DED");
-    setDedState("DETECTED");
-    addEvent("DED detected, safe land initiated");
-    
-    setTimeout(() => setDedState("LANDING"), 1000);
-    setTimeout(() => setDedState("LANDED"), 4000);
-  };
-
-  const resetSim = () => {
-    setActiveFault("NORMAL");
-    addEvent("Simulation reset to nominal flight");
-  };
 
   let statusText = "STATUS: NOMINAL";
   let statusColor = "text-green-500";
@@ -493,6 +469,13 @@ export default function SimulationPage() {
     statusText = "FAULT DETECTED — CORRECTED";
   }
 
+  // Build events log from toasts for visual display
+  const events = toasts.map(t => ({
+    id: t.id,
+    time: new Date().toLocaleTimeString(), // approximate
+    text: t.message
+  }));
+
   return (
     <div className="relative w-full h-screen bg-[#0d0d10] overflow-hidden">
       <Navigation />
@@ -500,7 +483,7 @@ export default function SimulationPage() {
       {/* HUD OVERLAY */}
       <div className="absolute inset-0 pointer-events-none z-10 p-6 flex flex-col justify-between">
         
-        {/* FIX 2 & 8: Centered Title and Wider Status Pill */}
+        {/* Title and Status Pill */}
         <div className="absolute top-20 left-1/2 -translate-x-1/2 flex flex-col items-center gap-4 w-full max-w-[400px]">
           <h1 className="text-xl font-bold tracking-[0.2em] text-white/90 uppercase text-center w-full">
             Fault Response Simulation
@@ -521,12 +504,12 @@ export default function SimulationPage() {
           </AnimatePresence>
         </div>
 
-        {/* FIX 8: Event Log Polish */}
+        {/* Event Log Polish */}
         <div 
           className="absolute bottom-6 left-6 bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-3 w-96 shadow-lg"
         >
           <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-2 border-b border-white/10 pb-1">
-            Event Log
+            System Event Log
           </h3>
           <div 
             className="flex flex-col gap-1 font-mono text-xs overflow-y-auto pr-2"
@@ -538,7 +521,7 @@ export default function SimulationPage() {
           >
             <AnimatePresence initial={false}>
               {events.length === 0 ? (
-                <p className="text-white/30 italic mt-4">No events recorded</p>
+                <p className="text-white/30 italic mt-4">Waiting for telemetry...</p>
               ) : (
                 [...events].reverse().map((ev) => (
                   <motion.div
@@ -549,7 +532,7 @@ export default function SimulationPage() {
                   >
                     <span className="text-white/40">{ev.time}</span>
                     <span>—</span>
-                    <span className={ev.text.includes("DED") ? "text-red-400" : ev.text.includes("SEC") ? "text-amber-400" : "text-green-400"}>
+                    <span className={ev.text.includes("error") || ev.text.includes("DED") ? "text-red-400" : ev.text.includes("ECC") || ev.text.includes("SEC") ? "text-amber-400" : "text-green-400"}>
                       {ev.text}
                     </span>
                   </motion.div>
@@ -560,25 +543,25 @@ export default function SimulationPage() {
         </div>
       </div>
 
-      {/* FIX 8: Manual Injection Buttons Polish */}
+      {/* Manual Injection Buttons */}
       <div className="absolute bottom-6 right-6 bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-4 flex flex-col gap-3 shadow-lg pointer-events-auto z-10">
         <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-1 border-b border-white/10 pb-1">
-          Manual Injection
+          Sandbox Controls
         </h3>
         <button 
-          onClick={injectSEC} 
+          onClick={() => injectFault("SEC")} 
           className="bg-amber-500/10 text-amber-500 border border-amber-500 hover:bg-amber-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors"
         >
           INJECT SEC / TMR FAULT
         </button>
         <button 
-          onClick={injectDED} 
+          onClick={() => injectFault("DED")} 
           className="bg-red-500/10 text-red-500 border border-red-500 hover:bg-red-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors"
         >
           INJECT DED FAULT
         </button>
         <button 
-          onClick={resetSim} 
+          onClick={resetDemo} 
           className="bg-white/5 text-white/70 border border-white/20 hover:bg-white/10 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors mt-2"
         >
           RESET FLIGHT
