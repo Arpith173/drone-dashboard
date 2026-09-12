@@ -8,6 +8,36 @@ import Navigation from "@/components/Navigation";
 import { motion, AnimatePresence } from "framer-motion";
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CUSTOM SHADERS & MATERIALS
+// ═══════════════════════════════════════════════════════════════════════════
+
+const groundGradientMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  uniforms: {
+    color1: { value: new THREE.Color("#2a2a2e") },
+    color2: { value: new THREE.Color("#0d0d10") },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform vec3 color1;
+    uniform vec3 color2;
+    varying vec2 vUv;
+    void main() {
+      float d = distance(vUv, vec2(0.5));
+      float alpha = smoothstep(0.5, 0.0, d) * 0.4; // 0.4 max opacity in center
+      gl_FragColor = vec4(color1, alpha);
+    }
+  `,
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 3D SCENE COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -19,11 +49,16 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
   React.useImperativeHandle(ref, () => internalRef.current!);
 
   const state = useRef<"NORMAL" | "SEC" | "DED">("NORMAL");
-  const landingState = useRef<{ active: boolean; startX: number; startZ: number; }>({ active: false, startX: 0, startZ: 0 });
+  const landingState = useRef<{ active: boolean; startX: number; startY: number; startZ: number; }>({ active: false, startX: 0, startY: 4, startZ: 0 });
   const secWobbleTime = useRef(0);
   const pathTime = useRef(0);
-  const pulseTime = useRef(0);
+  const dedPulseTime = useRef(0);
   
+  // Particle systems
+  const sparksRef = useRef<{ pos: THREE.Vector3; vel: THREE.Vector3; age: number }[]>([]);
+  const sparkMeshRef = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+
   const { cloned, normScale, normOffset, bodyMaterials } = useMemo(() => {
     const cloned = scene.clone(true);
     cloned.position.set(0, 0, 0);
@@ -45,7 +80,6 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
     cloned.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        // Hide the subsystems that are normally exploded out of the drone
         if (mesh.name.startsWith("Layer_")) {
           mesh.visible = false;
         } else {
@@ -54,7 +88,7 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
             roughness: 0.72,
             metalness: 0.35,
             emissive: new THREE.Color(0, 0, 0),
-            emissiveIntensity: 1,
+            emissiveIntensity: 0,
           });
           mesh.material = mat;
           mesh.castShadow = true;
@@ -74,14 +108,30 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
           landingState.current = {
             active: true,
             startX: internalRef.current.position.x,
+            startY: internalRef.current.position.y,
             startZ: internalRef.current.position.z,
           };
+          dedPulseTime.current = 0;
         }
       }
     } else if (props.activeFault === "SEC") {
       if (state.current !== "DED") {
         state.current = "SEC";
-        secWobbleTime.current = 1.5;
+        secWobbleTime.current = 1.0; // 1 second pulse
+        
+        // Spawn sparks
+        if (internalRef.current) {
+           const newSparks = [];
+           for(let i=0; i<12; i++) {
+              const vel = new THREE.Vector3(
+                 (Math.random() - 0.5) * 4,
+                 (Math.random() - 0.5) * 4,
+                 (Math.random() - 0.5) * 4
+              );
+              newSparks.push({ pos: new THREE.Vector3(), vel, age: 0 });
+           }
+           sparksRef.current = newSparks;
+        }
       }
     } else {
       if (state.current === "DED") {
@@ -95,29 +145,45 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
     if (!internalRef.current) return;
     
     const isDED = state.current === "DED";
-    const landed = isDED && internalRef.current.position.y <= 0.15;
+    const currentY = internalRef.current.position.y;
+    const landed = isDED && currentY <= 0.15;
     
-    let propSpeed = 20;
-    if (isDED) propSpeed = landed ? 0 : 5;
-    else if (state.current === "SEC") propSpeed = 20 + Math.sin(rootState.clock.elapsedTime * 20) * 10;
+    // --- Propellers ---
+    let propSpeed = 25; // NORMAL & SEC
+    if (isDED) {
+      if (landed) {
+        propSpeed = 0;
+      } else {
+        const startY = Math.max(landingState.current.startY, 0.2);
+        const progress = Math.max(0, Math.min(1, (currentY - 0.1) / (startY - 0.1)));
+        propSpeed = 25 * progress;
+      }
+    }
     
     cloned.traverse((child) => {
       if (child.name.toLowerCase().includes("prop")) {
-        child.rotation.y += propSpeed * delta;
+        // FIX 1: Rotate on local Z axis
+        child.rotation.z += propSpeed * delta;
       }
     });
 
+    // --- Emissive Effects ---
     if (isDED) {
-      pulseTime.current += delta;
-      const intensity = (Math.sin(pulseTime.current * 3) + 1) / 2;
+      dedPulseTime.current += delta;
+      // Oscillate between 0.3 and 1.2 on a 1.5-second cycle
+      // sine frequency = 2*PI / 1.5
+      const intensity = 0.3 + ((Math.sin(dedPulseTime.current * (Math.PI * 2 / 1.5)) + 1) / 2) * 0.9;
       bodyMaterials.forEach(m => {
-        m.emissive = new THREE.Color(0xff0000);
-        m.emissiveIntensity = intensity * 2;
+        m.emissive = new THREE.Color(0xef4444);
+        m.emissiveIntensity = intensity;
       });
     } else if (state.current === "SEC" && secWobbleTime.current > 0) {
+      // 0 -> 1.5 -> 0 over 1 second (sinusoidal pulse)
+      const progress = 1.0 - secWobbleTime.current; // 0 to 1
+      const intensity = Math.sin(progress * Math.PI) * 1.5;
       bodyMaterials.forEach(m => {
-        m.emissive = new THREE.Color(0xffaa00);
-        m.emissiveIntensity = 2;
+        m.emissive = new THREE.Color(0xf59e0b);
+        m.emissiveIntensity = intensity;
       });
     } else {
       bodyMaterials.forEach(m => {
@@ -126,8 +192,9 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
       });
     }
 
+    // --- Flight Path ---
     if (isDED) {
-      if (internalRef.current.position.y > 0.1) {
+      if (currentY > 0.1) {
         internalRef.current.position.y -= 0.8 * delta;
         if (internalRef.current.position.y < 0.1) internalRef.current.position.y = 0.1;
         internalRef.current.position.x = landingState.current.startX;
@@ -142,10 +209,10 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
       const z = Math.sin(pathTime.current) * b;
       
       const hoverBob = Math.sin(rootState.clock.elapsedTime * 2) * 0.15;
-      let targetY = 3 + hoverBob;
+      let targetY = 4 + hoverBob; // FIX 5: Y = 4 minimum
       
-      if (internalRef.current.position.y < 2.8) {
-         internalRef.current.position.y = THREE.MathUtils.lerp(internalRef.current.position.y, targetY, delta * 2);
+      if (currentY < 3.8) {
+         internalRef.current.position.y = THREE.MathUtils.lerp(currentY, targetY, delta * 2);
       } else {
          internalRef.current.position.y = targetY;
       }
@@ -161,7 +228,7 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
       
       if (state.current === "SEC" && secWobbleTime.current > 0) {
         secWobbleTime.current -= delta;
-        const wobbleIntensity = (secWobbleTime.current / 1.5) * 0.1;
+        const wobbleIntensity = (secWobbleTime.current / 1.0) * 0.2;
         const roll = (Math.random() - 0.5) * wobbleIntensity;
         const pitch = (Math.random() - 0.5) * wobbleIntensity;
         const wobbleQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch, 0, roll));
@@ -170,32 +237,117 @@ const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "D
       
       internalRef.current.quaternion.slerp(targetQuat, 10 * delta);
     }
+
+    // --- Sparks Update ---
+    if (sparkMeshRef.current) {
+       sparksRef.current = sparksRef.current.filter(p => p.age < 0.4);
+       sparksRef.current.forEach((p, i) => {
+          p.age += delta;
+          p.pos.addScaledVector(p.vel, delta);
+          p.vel.y -= 5 * delta; // gravity
+          
+          const scale = Math.max(0, 1 - (p.age / 0.4));
+          dummy.position.copy(p.pos);
+          // Apply drone's world transform to the sparks base position
+          // so they spawn at the drone and fly outward
+          const worldSpawn = p.pos.clone().applyMatrix4(internalRef.current!.matrixWorld);
+          dummy.position.copy(worldSpawn);
+          dummy.scale.setScalar(scale);
+          dummy.updateMatrix();
+          sparkMeshRef.current!.setMatrixAt(i, dummy.matrix);
+       });
+       sparkMeshRef.current.count = sparksRef.current.length;
+       sparkMeshRef.current.instanceMatrix.needsUpdate = true;
+    }
   });
 
   return (
-    <group ref={internalRef}>
-      <group position={[normOffset.x, normOffset.y, normOffset.z]} scale={normScale}>
-        <primitive object={cloned} />
-      </group>
-    </group>
+    <>
+       <group ref={internalRef}>
+         <group position={[normOffset.x, normOffset.y, normOffset.z]} scale={normScale}>
+           <primitive object={cloned} />
+         </group>
+       </group>
+       <instancedMesh ref={sparkMeshRef} args={[undefined, undefined, 16]}>
+         <sphereGeometry args={[0.05, 8, 8]} />
+         <meshBasicMaterial color="#f97316" />
+       </instancedMesh>
+    </>
   );
 });
 Drone.displayName = "Drone";
 
 useGLTF.preload("/rc_quadcopter_v3.glb");
 
-function Environment() {
+function FlightTrail({ droneRef, activeFault }: { droneRef: React.RefObject<THREE.Group>, activeFault: string }) {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const trailRef = useRef<{pos: THREE.Vector3, age: number}[]>([]);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const emitTimer = useRef(0);
+
+  useFrame((_, delta) => {
+    if (!meshRef.current) return;
+    
+    emitTimer.current += delta;
+    if (activeFault !== "DED" && droneRef.current && emitTimer.current > 0.1) {
+       emitTimer.current = 0;
+       trailRef.current.push({ pos: droneRef.current.position.clone(), age: 0 });
+    }
+    
+    trailRef.current = trailRef.current.filter(p => p.age < 2.0);
+    trailRef.current.forEach(p => p.age += delta);
+    
+    meshRef.current.count = trailRef.current.length;
+    trailRef.current.forEach((p, i) => {
+       const scale = Math.max(0, 1 - p.age / 2.0);
+       dummy.position.copy(p.pos);
+       dummy.scale.setScalar(scale);
+       dummy.updateMatrix();
+       meshRef.current!.setMatrixAt(i, dummy.matrix);
+    });
+    meshRef.current.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={meshRef} args={[undefined, undefined, 30]}>
+      <sphereGeometry args={[0.04, 8, 8]} />
+      <meshBasicMaterial color="#f97316" transparent opacity={0.3} />
+    </instancedMesh>
+  );
+}
+
+function SimEnvironment({ activeFault }: { activeFault: "NORMAL" | "SEC" | "DED" }) {
+  const pointLightRef = useRef<THREE.PointLight>(null);
+  const targetColor = activeFault === "DED" ? new THREE.Color("#ef4444") : new THREE.Color("#f97316");
+  
+  useFrame((state, delta) => {
+    if (pointLightRef.current) {
+      pointLightRef.current.color.lerp(targetColor, delta * 4);
+      pointLightRef.current.intensity = THREE.MathUtils.lerp(
+        pointLightRef.current.intensity,
+        activeFault === "DED" ? 2.5 : 1.5,
+        delta * 2
+      );
+    }
+  });
+
   return (
     <>
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[10, 10, 10]} intensity={1.5} />
+      {/* FIX 4: Cinematic Lighting */}
+      <directionalLight position={[5, 8, 3]} intensity={2.5} castShadow />
+      <ambientLight intensity={0.15} />
+      <pointLight ref={pointLightRef} position={[0, 2, 0]} intensity={1.5} distance={12} color="#f97316" />
       
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+      {/* FIX 8: Ground plane with radial gradient and distinct grid */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} receiveShadow>
         <planeGeometry args={[50, 50]} />
-        <meshStandardMaterial color="#1a1a1e" />
+        <meshStandardMaterial color="#0d0d10" />
       </mesh>
-      
-      <gridHelper args={[50, 50, "#333333", "#222222"]} position={[0, 0.001, 0]} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.005, 0]}>
+         <planeGeometry args={[50, 50]} />
+         <primitive object={groundGradientMaterial} attach="material" />
+      </mesh>
+      <gridHelper args={[50, 50, "#2a2a2e", "#2a2a2e"]} position={[0, 0.001, 0]} />
     </>
   );
 }
@@ -203,6 +355,8 @@ function Environment() {
 function SceneContainer({ activeFault }: { activeFault: "NORMAL" | "SEC" | "DED" }) {
   const droneRef = useRef<THREE.Group>(null);
   const markerRef = useRef<THREE.Group>(null);
+  const outerRingRef = useRef<THREE.Mesh>(null);
+  const beamRef = useRef<THREE.Mesh>(null);
   const wasDED = useRef(false);
 
   useFrame((state, delta) => {
@@ -220,7 +374,18 @@ function SceneContainer({ activeFault }: { activeFault: "NORMAL" | "SEC" | "DED"
       wasDED.current = false;
     }
 
-    // Soft chase camera - update OrbitControls target to drone position
+    if (isDED && markerRef.current && outerRingRef.current && droneRef.current && beamRef.current) {
+       // Pulsing outer ring
+       const pulseScale = 1.0 + (Math.sin(state.clock.elapsedTime * Math.PI * 2) * 0.1);
+       outerRingRef.current.scale.setScalar(pulseScale);
+
+       // Vertical beam height matching drone altitude
+       const alt = Math.max(0.1, droneRef.current.position.y);
+       beamRef.current.scale.y = alt;
+       beamRef.current.position.y = alt / 2;
+    }
+
+    // Soft chase camera - ensure ground plane in lower third
     if (droneRef.current && state.controls) {
       const controls = state.controls as any;
       controls.target.lerp(droneRef.current.position, delta * 2);
@@ -230,21 +395,35 @@ function SceneContainer({ activeFault }: { activeFault: "NORMAL" | "SEC" | "DED"
 
   return (
     <>
-      <Environment />
+      <SimEnvironment activeFault={activeFault} />
+      
+      {/* FIX 7: Enhanced Landing Marker & Vertical Beam */}
       <group ref={markerRef} visible={false}>
-         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-            <ringGeometry args={[1.4, 1.5, 32]} />
-            <meshBasicMaterial color="#f97316" side={THREE.DoubleSide} />
+         {/* Inner Ring */}
+         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+            <ringGeometry args={[0.95, 1.0, 32]} />
+            <meshBasicMaterial color="#ef4444" opacity={0.8} transparent side={THREE.DoubleSide} />
          </mesh>
-         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-            <planeGeometry args={[0.1, 3]} />
-            <meshBasicMaterial color="#f97316" />
+         {/* Outer Ring */}
+         <mesh ref={outerRingRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+            <ringGeometry args={[1.5, 1.6, 32]} />
+            <meshBasicMaterial color="#ef4444" opacity={0.8} transparent side={THREE.DoubleSide} />
          </mesh>
-         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-            <planeGeometry args={[3, 0.1]} />
-            <meshBasicMaterial color="#f97316" />
+         {/* Crosshair */}
+         <group position={[0, 0.02, 0]}>
+            <mesh position={[0.5, 0, 0]}><boxGeometry args={[0.4, 0.02, 0.02]}/><meshBasicMaterial color="#ef4444"/></mesh>
+            <mesh position={[-0.5, 0, 0]}><boxGeometry args={[0.4, 0.02, 0.02]}/><meshBasicMaterial color="#ef4444"/></mesh>
+            <mesh position={[0, 0, 0.5]}><boxGeometry args={[0.02, 0.02, 0.4]}/><meshBasicMaterial color="#ef4444"/></mesh>
+            <mesh position={[0, 0, -0.5]}><boxGeometry args={[0.02, 0.02, 0.4]}/><meshBasicMaterial color="#ef4444"/></mesh>
+         </group>
+         {/* Vertical Beam */}
+         <mesh ref={beamRef} position={[0, 0, 0]}>
+            <cylinderGeometry args={[0.02, 0.02, 1, 8]} />
+            <meshBasicMaterial color="#ef4444" transparent opacity={0.4} />
          </mesh>
       </group>
+
+      <FlightTrail droneRef={droneRef} activeFault={activeFault} />
       <Drone ref={droneRef} activeFault={activeFault} />
     </>
   );
@@ -257,8 +436,6 @@ function SceneContainer({ activeFault }: { activeFault: "NORMAL" | "SEC" | "DED"
 export default function SimulationPage() {
   const [activeFault, setActiveFault] = useState<"NORMAL" | "SEC" | "DED">("NORMAL");
   const [events, setEvents] = useState<{ id: number, time: string, text: string }[]>([]);
-  
-  // Track DED descent state
   const [dedState, setDedState] = useState<"DETECTED" | "LANDING" | "LANDED">("DETECTED");
 
   const activeFaultRef = useRef(activeFault);
@@ -269,15 +446,14 @@ export default function SimulationPage() {
   const addEvent = (text: string) => {
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
-    setEvents(prev => [...prev, { id: Date.now(), time: timeStr, text }].slice(-5));
+    setEvents(prev => [...prev, { id: Date.now(), time: timeStr, text }]);
   };
 
   const injectSEC = () => {
-    if (activeFaultRef.current === "DED") return; // DED is unrecoverable until reset
+    if (activeFaultRef.current === "DED") return;
     setActiveFault("SEC");
     addEvent("SEC injected, auto-correcting...");
     
-    // Auto-recover after 1.5s visual wobble completes
     setTimeout(() => {
       if (activeFaultRef.current !== "DED") {
         setActiveFault("NORMAL");
@@ -293,7 +469,7 @@ export default function SimulationPage() {
     addEvent("DED detected, safe land initiated");
     
     setTimeout(() => setDedState("LANDING"), 1000);
-    setTimeout(() => setDedState("LANDED"), 4000); // approx landing time
+    setTimeout(() => setDedState("LANDED"), 4000);
   };
 
   const resetSim = () => {
@@ -301,17 +477,19 @@ export default function SimulationPage() {
     addEvent("Simulation reset to nominal flight");
   };
 
-  // HUD Status text
   let statusText = "STATUS: NOMINAL";
   let statusColor = "text-green-500";
+  let borderColor = "border-l-green-500";
   
   if (activeFault === "DED") {
     statusColor = "text-red-500";
+    borderColor = "border-l-red-500";
     if (dedState === "DETECTED") statusText = "DED DETECTED — UNCORRECTABLE ERROR";
     else if (dedState === "LANDING") statusText = "INITIATING SAFE LAND";
     else statusText = "LANDED SAFELY";
   } else if (activeFault === "SEC") {
     statusColor = "text-amber-500";
+    borderColor = "border-l-amber-500";
     statusText = "FAULT DETECTED — CORRECTED";
   }
 
@@ -321,38 +499,57 @@ export default function SimulationPage() {
       
       {/* HUD OVERLAY */}
       <div className="absolute inset-0 pointer-events-none z-10 p-6 flex flex-col justify-between">
-        {/* TOP LEFT */}
-        <div className="flex flex-col gap-4 items-start">
-          <h1 className="text-xl font-bold tracking-[0.2em] text-white/90 uppercase border-b border-orange-500/50 pb-2">
+        
+        {/* FIX 2 & 8: Centered Title and Wider Status Pill */}
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 flex flex-col items-center gap-4 w-full max-w-[400px]">
+          <h1 className="text-xl font-bold tracking-[0.2em] text-white/90 uppercase text-center w-full">
             Fault Response Simulation
           </h1>
-          <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-3 rounded-lg shadow-lg">
-            <p className={`font-mono text-sm font-bold tracking-wider ${statusColor}`}>
-              {statusText}
-            </p>
-          </div>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeFault + dedState}
+              initial={{ opacity: 0, scale: 0.95, y: -5 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 1.05, y: 5 }}
+              transition={{ duration: 0.2 }}
+              className={`w-full bg-black/60 backdrop-blur-xl border border-white/10 rounded-full py-3 px-6 shadow-lg border-l-4 ${borderColor}`}
+            >
+              <p className={`font-mono text-base font-bold tracking-wider text-center ${statusColor}`}>
+                {statusText}
+              </p>
+            </motion.div>
+          </AnimatePresence>
         </div>
 
-        {/* BOTTOM LEFT: Event Log */}
-        <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-3 w-96 shadow-lg">
+        {/* FIX 8: Event Log Polish */}
+        <div 
+          className="absolute bottom-6 left-6 bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-3 w-96 shadow-lg"
+        >
           <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-2 border-b border-white/10 pb-1">
             Event Log
           </h3>
-          <div className="flex flex-col gap-1 font-mono text-xs overflow-hidden h-24">
+          <div 
+            className="flex flex-col gap-1 font-mono text-xs overflow-y-auto pr-2"
+            style={{ 
+               maxHeight: '120px', 
+               maskImage: 'linear-gradient(to bottom, transparent, black 15%)',
+               WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 15%)' 
+            }}
+          >
             <AnimatePresence initial={false}>
               {events.length === 0 ? (
-                <p className="text-white/30 italic">No events recorded</p>
+                <p className="text-white/30 italic mt-4">No events recorded</p>
               ) : (
-                events.map((ev) => (
+                [...events].reverse().map((ev) => (
                   <motion.div
                     key={ev.id}
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
-                    className="text-white/70 flex gap-2"
+                    className="text-white/70 flex gap-2 shrink-0 py-0.5"
                   >
                     <span className="text-white/40">{ev.time}</span>
                     <span>—</span>
-                    <span className={ev.text.includes("DED") ? "text-red-400" : "text-amber-400"}>
+                    <span className={ev.text.includes("DED") ? "text-red-400" : ev.text.includes("SEC") ? "text-amber-400" : "text-green-400"}>
                       {ev.text}
                     </span>
                   </motion.div>
@@ -363,18 +560,27 @@ export default function SimulationPage() {
         </div>
       </div>
 
-      {/* BOTTOM RIGHT: Controls Panel */}
+      {/* FIX 8: Manual Injection Buttons Polish */}
       <div className="absolute bottom-6 right-6 bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-4 flex flex-col gap-3 shadow-lg pointer-events-auto z-10">
         <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-1 border-b border-white/10 pb-1">
           Manual Injection
         </h3>
-        <button onClick={injectSEC} className="bg-amber-500/10 text-amber-500 border border-amber-500/50 hover:bg-amber-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors">
+        <button 
+          onClick={injectSEC} 
+          className="bg-amber-500/10 text-amber-500 border border-amber-500 hover:bg-amber-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors"
+        >
           INJECT SEC / TMR FAULT
         </button>
-        <button onClick={injectDED} className="bg-red-500/10 text-red-500 border border-red-500/50 hover:bg-red-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors">
+        <button 
+          onClick={injectDED} 
+          className="bg-red-500/10 text-red-500 border border-red-500 hover:bg-red-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors"
+        >
           INJECT DED FAULT
         </button>
-        <button onClick={resetSim} className="bg-white/5 text-white/70 border border-white/20 hover:bg-white/10 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors mt-2">
+        <button 
+          onClick={resetSim} 
+          className="bg-white/5 text-white/70 border border-white/20 hover:bg-white/10 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors mt-2"
+        >
           RESET FLIGHT
         </button>
       </div>
@@ -384,7 +590,7 @@ export default function SimulationPage() {
         <OrbitControls 
           makeDefault
           enablePan={false}
-          maxPolarAngle={Math.PI / 2 - 0.05} // Don't go below ground
+          maxPolarAngle={Math.PI / 2 - 0.1} // Keep camera above ground
           minDistance={5}
           maxDistance={30}
         />
