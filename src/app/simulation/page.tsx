@@ -4,7 +4,6 @@ import React, { useRef, useMemo, useState, useEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import { useDashboard } from "@/lib/DashboardContext";
 import Navigation from "@/components/Navigation";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -12,95 +11,8 @@ import { motion, AnimatePresence } from "framer-motion";
 // 3D SCENE COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-
-useGLTF.preload("/rc_quadcopter_v3.glb");
-
-function Environment() {
-  const { activeFaultModule } = useDashboard();
-  const dronePos = useRef(new THREE.Vector3());
-  const markerRef = useRef<THREE.Group>(null);
-  const showMarker = activeFaultModule === "CPU_DED";
-
-  // Note: the prompt says landing zone marker appears "directly below the drone's current X/Z position"
-  // Since we don't easily know the drone's position here without drilling it up, we can just use a local ref
-  // and update it when DED fires.
-  const [markerPos, setMarkerPos] = useState<[number, number, number]>([0, 0.01, 0]);
-
-  useEffect(() => {
-    if (activeFaultModule === "CPU_DED") {
-      // In a real app we'd share the ref or state, but here we can just read the scene
-      // Wait, we can't easily. Let's just have the Drone update a global or context, or use a naive approach.
-      // Better yet, just put the marker inside the same component or find the drone in the scene.
-    }
-  }, [activeFaultModule]);
-
-  return (
-    <>
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[10, 10, 10]} intensity={1.5} />
-      
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-        <planeGeometry args={[50, 50]} />
-        <meshStandardMaterial color="#1a1a1e" />
-      </mesh>
-      
-      <gridHelper args={[50, 50, "#333333", "#222222"]} position={[0, 0.001, 0]} />
-    </>
-  );
-}
-
-// We'll move the marker into a combined component so it can read drone position easily
-function SimulationScene3D() {
-  const { activeFaultModule } = useDashboard();
-  const droneRef = useRef<THREE.Group>(null);
-  const markerRef = useRef<THREE.Group>(null);
-  const isDED = activeFaultModule === "CPU_DED";
-  const wasDED = useRef(false);
-
-  useFrame(() => {
-    if (isDED && !wasDED.current && droneRef.current && markerRef.current) {
-      markerRef.current.position.set(
-        droneRef.current.position.x,
-        0.01,
-        droneRef.current.position.z
-      );
-      markerRef.current.visible = true;
-      wasDED.current = true;
-    } else if (!isDED && wasDED.current) {
-      if (markerRef.current) markerRef.current.visible = false;
-      wasDED.current = false;
-    }
-  });
-
-  return (
-    <>
-      <Environment />
-      <group ref={markerRef} visible={false}>
-         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-            <ringGeometry args={[1.4, 1.5, 32]} />
-            <meshBasicMaterial color="#f97316" side={THREE.DoubleSide} />
-         </mesh>
-         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-            <planeGeometry args={[0.1, 3]} />
-            <meshBasicMaterial color="#f97316" />
-         </mesh>
-         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-            <planeGeometry args={[3, 0.1]} />
-            <meshBasicMaterial color="#f97316" />
-         </mesh>
-      </group>
-      
-      {/* We intercept the ref from DroneModel by wrapping it or modifying it. 
-          Actually, we can just let DroneModel handle its own position and we'll track it via a shared context or just let it be.
-          Let's refactor DroneModel slightly to accept a ref. */}
-    </>
-  );
-}
-
-// Refactored DroneModel to expose its position ref for the marker
-const Drone = React.forwardRef<THREE.Group>((props, ref) => {
+const Drone = React.forwardRef<THREE.Group, { activeFault: "NORMAL" | "SEC" | "DED" }>((props, ref) => {
   const { scene } = useGLTF("/rc_quadcopter_v3.glb");
-  const { activeFaultModule } = useDashboard();
   const internalRef = useRef<THREE.Group>(null);
   
   // Expose to parent
@@ -133,24 +45,29 @@ const Drone = React.forwardRef<THREE.Group>((props, ref) => {
     cloned.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        const mat = new THREE.MeshStandardMaterial({
-          color: GRAPHITE_COLOR,
-          roughness: 0.72,
-          metalness: 0.35,
-          emissive: new THREE.Color(0, 0, 0),
-          emissiveIntensity: 1,
-        });
-        mesh.material = mat;
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        mats.push(mat);
+        // Hide the subsystems that are normally exploded out of the drone
+        if (mesh.name.startsWith("Layer_")) {
+          mesh.visible = false;
+        } else {
+          const mat = new THREE.MeshStandardMaterial({
+            color: GRAPHITE_COLOR,
+            roughness: 0.72,
+            metalness: 0.35,
+            emissive: new THREE.Color(0, 0, 0),
+            emissiveIntensity: 1,
+          });
+          mesh.material = mat;
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          mats.push(mat);
+        }
       }
     });
     return { cloned, normScale, normOffset, bodyMaterials: mats };
   }, [scene]);
 
   useEffect(() => {
-    if (activeFaultModule === "CPU_DED") {
+    if (props.activeFault === "DED") {
       if (state.current !== "DED") {
         state.current = "DED";
         if (internalRef.current) {
@@ -161,7 +78,7 @@ const Drone = React.forwardRef<THREE.Group>((props, ref) => {
           };
         }
       }
-    } else if (activeFaultModule === "CPU_SEC" || (activeFaultModule && activeFaultModule.startsWith("ALU_"))) {
+    } else if (props.activeFault === "SEC") {
       if (state.current !== "DED") {
         state.current = "SEC";
         secWobbleTime.current = 1.5;
@@ -172,7 +89,7 @@ const Drone = React.forwardRef<THREE.Group>((props, ref) => {
         landingState.current.active = false;
       }
     }
-  }, [activeFaultModule]);
+  }, [props.activeFault]);
 
   useFrame((rootState, delta) => {
     if (!internalRef.current) return;
@@ -265,14 +182,31 @@ const Drone = React.forwardRef<THREE.Group>((props, ref) => {
 });
 Drone.displayName = "Drone";
 
-function SceneContainer() {
-  const { activeFaultModule } = useDashboard();
+useGLTF.preload("/rc_quadcopter_v3.glb");
+
+function Environment() {
+  return (
+    <>
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[10, 10, 10]} intensity={1.5} />
+      
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+        <planeGeometry args={[50, 50]} />
+        <meshStandardMaterial color="#1a1a1e" />
+      </mesh>
+      
+      <gridHelper args={[50, 50, "#333333", "#222222"]} position={[0, 0.001, 0]} />
+    </>
+  );
+}
+
+function SceneContainer({ activeFault }: { activeFault: "NORMAL" | "SEC" | "DED" }) {
   const droneRef = useRef<THREE.Group>(null);
   const markerRef = useRef<THREE.Group>(null);
   const wasDED = useRef(false);
 
   useFrame((state, delta) => {
-    const isDED = activeFaultModule === "CPU_DED";
+    const isDED = activeFault === "DED";
     if (isDED && !wasDED.current && droneRef.current && markerRef.current) {
       markerRef.current.position.set(
         droneRef.current.position.x,
@@ -311,128 +245,141 @@ function SceneContainer() {
             <meshBasicMaterial color="#f97316" />
          </mesh>
       </group>
-      <Drone ref={droneRef} />
+      <Drone ref={droneRef} activeFault={activeFault} />
     </>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// HUD COMPONENTS
+// MAIN PAGE & HUD
 // ═══════════════════════════════════════════════════════════════════════════
 
-function SimulationHUD() {
-  const { activeFaultModule, liveMonitor } = useDashboard();
+export default function SimulationPage() {
+  const [activeFault, setActiveFault] = useState<"NORMAL" | "SEC" | "DED">("NORMAL");
+  const [events, setEvents] = useState<{ id: number, time: string, text: string }[]>([]);
   
+  // Track DED descent state
+  const [dedState, setDedState] = useState<"DETECTED" | "LANDING" | "LANDED">("DETECTED");
+
+  const activeFaultRef = useRef(activeFault);
+  useEffect(() => {
+    activeFaultRef.current = activeFault;
+  }, [activeFault]);
+
+  const addEvent = (text: string) => {
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+    setEvents(prev => [...prev, { id: Date.now(), time: timeStr, text }].slice(-5));
+  };
+
+  const injectSEC = () => {
+    if (activeFaultRef.current === "DED") return; // DED is unrecoverable until reset
+    setActiveFault("SEC");
+    addEvent("SEC injected, auto-correcting...");
+    
+    // Auto-recover after 1.5s visual wobble completes
+    setTimeout(() => {
+      if (activeFaultRef.current !== "DED") {
+        setActiveFault("NORMAL");
+        addEvent("SEC corrected — flight nominal");
+      }
+    }, 1500);
+  };
+
+  const injectDED = () => {
+    if (activeFaultRef.current === "DED") return;
+    setActiveFault("DED");
+    setDedState("DETECTED");
+    addEvent("DED detected, safe land initiated");
+    
+    setTimeout(() => setDedState("LANDING"), 1000);
+    setTimeout(() => setDedState("LANDED"), 4000); // approx landing time
+  };
+
+  const resetSim = () => {
+    setActiveFault("NORMAL");
+    addEvent("Simulation reset to nominal flight");
+  };
+
   // HUD Status text
   let statusText = "STATUS: NOMINAL";
   let statusColor = "text-green-500";
   
-  // Track DED descent state via a small local state since we can't easily read the drone Y here without context bridge.
-  // Actually, we can approximate it or just use a simple timeout for the label sequence.
-  const [dedState, setDedState] = useState<"DETECTED" | "LANDING" | "LANDED">("DETECTED");
-  
-  useEffect(() => {
-    if (activeFaultModule === "CPU_DED") {
-      setDedState("DETECTED");
-      const t1 = setTimeout(() => setDedState("LANDING"), 1000);
-      const t2 = setTimeout(() => setDedState("LANDED"), 4000); // approx landing time
-      return () => { clearTimeout(t1); clearTimeout(t2); };
-    }
-  }, [activeFaultModule]);
-
-  if (activeFaultModule === "CPU_DED") {
+  if (activeFault === "DED") {
     statusColor = "text-red-500";
     if (dedState === "DETECTED") statusText = "DED DETECTED — UNCORRECTABLE ERROR";
     else if (dedState === "LANDING") statusText = "INITIATING SAFE LAND";
     else statusText = "LANDED SAFELY";
-  } else if (activeFaultModule === "CPU_SEC" || (activeFaultModule && activeFaultModule.startsWith("ALU_"))) {
+  } else if (activeFault === "SEC") {
     statusColor = "text-amber-500";
     statusText = "FAULT DETECTED — CORRECTED";
   }
 
-  // Event Log
-  const [events, setEvents] = useState<{ id: number, time: string, text: string }[]>([]);
-  const lastMonitorState = useRef(liveMonitor.type);
-
-  useEffect(() => {
-    if (liveMonitor.type !== lastMonitorState.current) {
-      lastMonitorState.current = liveMonitor.type;
-      
-      const now = new Date();
-      const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
-      
-      let newEvent = "";
-      if (liveMonitor.type === "SEC_CORRECTED") {
-        newEvent = "SEC corrected";
-      } else if (liveMonitor.type === "ALU_RECOVERED") {
-        newEvent = "TMR masked ALU fault";
-      } else if (liveMonitor.type === "DED_DETECTED") {
-        newEvent = "DED detected, safe land initiated";
-      }
-      
-      if (newEvent) {
-        setEvents(prev => [...prev, { id: Date.now(), time: timeStr, text: newEvent }].slice(-5));
-      }
-    }
-  }, [liveMonitor.type]);
-
-  return (
-    <div className="absolute inset-0 pointer-events-none z-10 p-6 flex flex-col justify-between">
-      {/* TOP ROW */}
-      <div className="flex justify-between items-start">
-        {/* Top Left: Status Label */}
-        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-3 rounded-lg shadow-lg">
-          <p className={`font-mono text-sm font-bold tracking-wider ${statusColor}`}>
-            {statusText}
-          </p>
-        </div>
-        
-        {/* Top Center: Page Title */}
-        <div className="absolute left-1/2 -translate-x-1/2 top-6 text-center">
-          <h1 className="text-xl font-bold tracking-[0.2em] text-white/90 uppercase border-b border-orange-500/50 pb-2 inline-block">
-            Fault Response Simulation
-          </h1>
-        </div>
-      </div>
-
-      {/* BOTTOM ROW: Event Log */}
-      <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-3 w-96 shadow-lg">
-        <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-2 border-b border-white/10 pb-1">
-          Event Log
-        </h3>
-        <div className="flex flex-col gap-1 font-mono text-xs overflow-hidden h-24">
-          <AnimatePresence initial={false}>
-            {events.length === 0 ? (
-              <p className="text-white/30 italic">No events recorded</p>
-            ) : (
-              events.map((ev) => (
-                <motion.div
-                  key={ev.id}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  className="text-white/70 flex gap-2"
-                >
-                  <span className="text-white/40">{ev.time}</span>
-                  <span>—</span>
-                  <span className={ev.text.includes("DED") ? "text-red-400" : "text-amber-400"}>
-                    {ev.text}
-                  </span>
-                </motion.div>
-              ))
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export default function SimulationPage() {
   return (
     <div className="relative w-full h-screen bg-[#0d0d10] overflow-hidden">
       <Navigation />
-      <SimulationHUD />
       
+      {/* HUD OVERLAY */}
+      <div className="absolute inset-0 pointer-events-none z-10 p-6 flex flex-col justify-between">
+        {/* TOP LEFT */}
+        <div className="flex flex-col gap-4 items-start">
+          <h1 className="text-xl font-bold tracking-[0.2em] text-white/90 uppercase border-b border-orange-500/50 pb-2">
+            Fault Response Simulation
+          </h1>
+          <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-3 rounded-lg shadow-lg">
+            <p className={`font-mono text-sm font-bold tracking-wider ${statusColor}`}>
+              {statusText}
+            </p>
+          </div>
+        </div>
+
+        {/* BOTTOM LEFT: Event Log */}
+        <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-3 w-96 shadow-lg">
+          <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-2 border-b border-white/10 pb-1">
+            Event Log
+          </h3>
+          <div className="flex flex-col gap-1 font-mono text-xs overflow-hidden h-24">
+            <AnimatePresence initial={false}>
+              {events.length === 0 ? (
+                <p className="text-white/30 italic">No events recorded</p>
+              ) : (
+                events.map((ev) => (
+                  <motion.div
+                    key={ev.id}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="text-white/70 flex gap-2"
+                  >
+                    <span className="text-white/40">{ev.time}</span>
+                    <span>—</span>
+                    <span className={ev.text.includes("DED") ? "text-red-400" : "text-amber-400"}>
+                      {ev.text}
+                    </span>
+                  </motion.div>
+                ))
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+      </div>
+
+      {/* BOTTOM RIGHT: Controls Panel */}
+      <div className="absolute bottom-6 right-6 bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg p-4 flex flex-col gap-3 shadow-lg pointer-events-auto z-10">
+        <h3 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-1 border-b border-white/10 pb-1">
+          Manual Injection
+        </h3>
+        <button onClick={injectSEC} className="bg-amber-500/10 text-amber-500 border border-amber-500/50 hover:bg-amber-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors">
+          INJECT SEC / TMR FAULT
+        </button>
+        <button onClick={injectDED} className="bg-red-500/10 text-red-500 border border-red-500/50 hover:bg-red-500/20 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors">
+          INJECT DED FAULT
+        </button>
+        <button onClick={resetSim} className="bg-white/5 text-white/70 border border-white/20 hover:bg-white/10 px-4 py-2 rounded text-xs font-bold tracking-wider transition-colors mt-2">
+          RESET FLIGHT
+        </button>
+      </div>
+      
+      {/* 3D CANVAS */}
       <Canvas camera={{ position: [0, 8, 15], fov: 50 }}>
         <OrbitControls 
           makeDefault
@@ -441,7 +388,7 @@ export default function SimulationPage() {
           minDistance={5}
           maxDistance={30}
         />
-        <SceneContainer />
+        <SceneContainer activeFault={activeFault} />
       </Canvas>
     </div>
   );
