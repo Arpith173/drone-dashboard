@@ -12,170 +12,6 @@ import { motion, AnimatePresence } from "framer-motion";
 // 3D SCENE COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-function DroneModel() {
-  const { scene } = useGLTF("/rc_quadcopter_v3.glb");
-  const { activeFaultModule } = useDashboard();
-  const droneRef = useRef<THREE.Group>(null);
-  
-  // State machine values
-  const state = useRef<"NORMAL" | "SEC" | "DED">("NORMAL");
-  const landingState = useRef<{
-    active: boolean;
-    startX: number;
-    startZ: number;
-    targetY: number;
-  }>({ active: false, startX: 0, startZ: 0, targetY: 0.1 });
-  
-  const secWobbleTime = useRef(0);
-  const pathTime = useRef(0);
-  const pulseTime = useRef(0);
-  
-  // Materials to modify emissive (we'll just traverse and find a main body material, or all of them)
-  const bodyMaterials = useMemo(() => {
-    const mats: THREE.MeshStandardMaterial[] = [];
-    scene.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        if (mesh.material) {
-           mats.push(mesh.material as THREE.MeshStandardMaterial);
-        }
-      }
-    });
-    return mats;
-  }, [scene]);
-
-  // Sync state with DashboardContext
-  useEffect(() => {
-    if (activeFaultModule === "CPU_DED") {
-      if (state.current !== "DED") {
-        state.current = "DED";
-        if (droneRef.current) {
-          landingState.current = {
-            active: true,
-            startX: droneRef.current.position.x,
-            startZ: droneRef.current.position.z,
-            targetY: 0.1
-          };
-        }
-      }
-    } else if (activeFaultModule === "CPU_SEC" || (activeFaultModule && activeFaultModule.startsWith("ALU_"))) {
-      if (state.current !== "DED") { // Landing takes priority
-        state.current = "SEC";
-        secWobbleTime.current = 1.5; // 1.5 seconds of wobble
-      }
-    } else {
-      if (state.current === "SEC") {
-        state.current = "NORMAL";
-      }
-      if (state.current === "DED") {
-        // Reset from DED
-        state.current = "NORMAL";
-        landingState.current.active = false;
-      }
-    }
-  }, [activeFaultModule]);
-
-  useFrame((rootState, delta) => {
-    if (!droneRef.current) return;
-    
-    // --- Update Propellers ---
-    const isDED = state.current === "DED";
-    const landed = isDED && droneRef.current.position.y <= 0.15;
-    
-    let propSpeed = 20; // NORMAL
-    if (isDED) {
-      propSpeed = landed ? 0 : 5;
-    } else if (state.current === "SEC") {
-      propSpeed = 20 + Math.sin(rootState.clock.elapsedTime * 20) * 10; // erratic
-    }
-    
-    scene.traverse((child) => {
-      if (child.name.toLowerCase().includes("prop")) {
-        child.rotation.y += propSpeed * delta;
-      }
-    });
-
-    // --- Update Body Emissive ---
-    if (isDED) {
-      pulseTime.current += delta;
-      const intensity = (Math.sin(pulseTime.current * 3) + 1) / 2; // Slow breathe
-      bodyMaterials.forEach(m => {
-        m.emissive = new THREE.Color(0xff0000);
-        m.emissiveIntensity = intensity * 2;
-      });
-    } else if (state.current === "SEC" && secWobbleTime.current > 0) {
-      // Brief amber flash
-      bodyMaterials.forEach(m => {
-        m.emissive = new THREE.Color(0xffaa00);
-        m.emissiveIntensity = 2;
-      });
-    } else {
-      bodyMaterials.forEach(m => {
-        m.emissive = new THREE.Color(0x000000);
-        m.emissiveIntensity = 0;
-      });
-    }
-
-    // --- Flight Path ---
-    if (isDED) {
-      // DED FAULT - Landing Sequence
-      if (droneRef.current.position.y > 0.1) {
-        // Descend
-        droneRef.current.position.y -= 0.8 * delta;
-        if (droneRef.current.position.y < 0.1) droneRef.current.position.y = 0.1;
-        
-        // Ensure X/Z are locked to start of landing
-        droneRef.current.position.x = landingState.current.startX;
-        droneRef.current.position.z = landingState.current.startZ;
-        
-        // Level out rotation
-        droneRef.current.quaternion.slerp(new THREE.Quaternion().identity(), 5 * delta);
-      }
-    } else {
-      // NORMAL / SEC - Ellipse Path
-      pathTime.current += delta * 0.4; // Speed of ellipse
-      
-      const a = 8;
-      const b = 5;
-      const x = Math.cos(pathTime.current) * a;
-      const z = Math.sin(pathTime.current) * b;
-      
-      const hoverBob = Math.sin(rootState.clock.elapsedTime * 2) * 0.15;
-      let targetY = 3 + hoverBob;
-      
-      // If we are recovering from DED reset, lerp Y up
-      if (droneRef.current.position.y < 2.8) {
-         droneRef.current.position.y = THREE.MathUtils.lerp(droneRef.current.position.y, targetY, delta * 2);
-      } else {
-         droneRef.current.position.y = targetY;
-      }
-      
-      droneRef.current.position.x = x;
-      droneRef.current.position.z = z;
-      
-      // Calculate heading
-      const dx = -Math.sin(pathTime.current) * a;
-      const dz = Math.cos(pathTime.current) * b;
-      const angle = Math.atan2(dx, dz);
-      
-      const targetQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, angle, 0));
-      
-      // SEC Wobble
-      if (state.current === "SEC" && secWobbleTime.current > 0) {
-        secWobbleTime.current -= delta;
-        const wobbleIntensity = (secWobbleTime.current / 1.5) * 0.1; // damping
-        const roll = (Math.random() - 0.5) * wobbleIntensity;
-        const pitch = (Math.random() - 0.5) * wobbleIntensity;
-        const wobbleQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch, 0, roll));
-        targetQuat.multiply(wobbleQuat);
-      }
-      
-      droneRef.current.quaternion.slerp(targetQuat, 10 * delta);
-    }
-  });
-
-  return <primitive ref={droneRef} object={scene} scale={0.5} />;
-}
 
 useGLTF.preload("/rc_quadcopter_v3.glb");
 
@@ -276,17 +112,41 @@ const Drone = React.forwardRef<THREE.Group>((props, ref) => {
   const pathTime = useRef(0);
   const pulseTime = useRef(0);
   
-  const bodyMaterials = useMemo(() => {
+  const { cloned, normScale, normOffset, bodyMaterials } = useMemo(() => {
+    const cloned = scene.clone(true);
+    cloned.position.set(0, 0, 0);
+    cloned.rotation.set(0, 0, 0);
+    cloned.scale.set(1, 1, 1);
+    cloned.updateMatrixWorld(true);
+
+    const box = new THREE.Box3().setFromObject(cloned);
+    const sz = box.getSize(new THREE.Vector3());
+    const ct = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(sz.x, sz.y, sz.z, 0.001);
+
+    const normScale = 4.0 / maxDim;
+    const normOffset = ct.clone().negate().multiplyScalar(normScale);
+
+    const GRAPHITE_COLOR = new THREE.Color("#141416");
     const mats: THREE.MeshStandardMaterial[] = [];
-    scene.traverse((child) => {
+    
+    cloned.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        if (mesh.material) {
-           mats.push(mesh.material as THREE.MeshStandardMaterial);
-        }
+        const mat = new THREE.MeshStandardMaterial({
+          color: GRAPHITE_COLOR,
+          roughness: 0.72,
+          metalness: 0.35,
+          emissive: new THREE.Color(0, 0, 0),
+          emissiveIntensity: 1,
+        });
+        mesh.material = mat;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mats.push(mat);
       }
     });
-    return mats;
+    return { cloned, normScale, normOffset, bodyMaterials: mats };
   }, [scene]);
 
   useEffect(() => {
@@ -307,7 +167,6 @@ const Drone = React.forwardRef<THREE.Group>((props, ref) => {
         secWobbleTime.current = 1.5;
       }
     } else {
-      if (state.current === "SEC") state.current = "NORMAL";
       if (state.current === "DED") {
         state.current = "NORMAL";
         landingState.current.active = false;
@@ -325,7 +184,7 @@ const Drone = React.forwardRef<THREE.Group>((props, ref) => {
     if (isDED) propSpeed = landed ? 0 : 5;
     else if (state.current === "SEC") propSpeed = 20 + Math.sin(rootState.clock.elapsedTime * 20) * 10;
     
-    scene.traverse((child) => {
+    cloned.traverse((child) => {
       if (child.name.toLowerCase().includes("prop")) {
         child.rotation.y += propSpeed * delta;
       }
@@ -396,8 +255,13 @@ const Drone = React.forwardRef<THREE.Group>((props, ref) => {
     }
   });
 
-  // Keep a clean clone or standard scene
-  return <primitive ref={internalRef} object={scene} scale={0.5} />;
+  return (
+    <group ref={internalRef}>
+      <group position={[normOffset.x, normOffset.y, normOffset.z]} scale={normScale}>
+        <primitive object={cloned} />
+      </group>
+    </group>
+  );
 });
 Drone.displayName = "Drone";
 
